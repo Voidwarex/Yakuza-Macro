@@ -8,7 +8,7 @@ import urllib.request
 import os
 
 from flask import Flask, request, jsonify
-from pynput import keyboard
+from pynput import keyboard, mouse
 
 
 # =========================================================
@@ -24,7 +24,9 @@ config = {
 
 
 controller = keyboard.Controller()
+mouse_controller = mouse.Controller()
 is_pressed = False
+press_lock = threading.Lock()
 
 
 # =========================================================
@@ -693,6 +695,21 @@ COMMON_CSS = """
     }
 
 
+    input.form-input.key-bind {
+        cursor: pointer;
+    }
+
+
+    input.form-input.key-bind.listening {
+        border-color: var(--accent-green);
+
+        color: var(--accent-green);
+
+        box-shadow:
+            0 0 0 3px rgba(34, 197, 94, 0.2);
+    }
+
+
     input.form-input:focus {
         border-color: var(--accent-green);
 
@@ -858,6 +875,495 @@ COMMON_CSS = """
 
     </defs>
 </svg>
+"""
+
+
+# =========================================================
+# DASHBOARD JS
+# =========================================================
+
+DASHBOARD_JS = """
+<script>
+
+
+// =========================================================
+// SIDEBAR
+// =========================================================
+
+function toggleSidebar() {
+
+    document
+        .getElementById("sidebar")
+        .classList
+        .toggle("collapsed");
+
+}
+
+
+// =========================================================
+// VIEW SWITCHING
+// =========================================================
+
+function switchView(viewName, element) {
+
+    document
+        .querySelectorAll(".nav-item")
+        .forEach(el => {
+            el.classList.remove("active");
+        });
+
+
+    element.classList.add("active");
+
+
+    document
+        .querySelectorAll(".view")
+        .forEach(el => {
+            el.classList.remove("active");
+        });
+
+
+    document
+        .getElementById("view-" + viewName)
+        .classList.add("active");
+
+}
+
+
+// =========================================================
+// TOGGLE MACRO
+// =========================================================
+
+async function toggleMacro(checkbox) {
+
+    const statusText =
+        document.getElementById("macroStatus");
+
+
+    if (checkbox.checked) {
+
+        statusText.innerText = "Enabled";
+
+        statusText.classList.remove("disabled");
+
+        statusText.classList.add("enabled");
+
+    }
+
+    else {
+
+        statusText.innerText = "Disabled";
+
+        statusText.classList.remove("enabled");
+
+        statusText.classList.add("disabled");
+
+    }
+
+
+    try {
+
+        await fetch(
+            "/api/toggle",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify({
+                    active: checkbox.checked
+                })
+            }
+        );
+
+    }
+
+    catch (error) {
+
+        console.error(
+            "Failed to update macro state:",
+            error
+        );
+
+    }
+
+}
+
+
+// =========================================================
+// KEY CAPTURE
+// =========================================================
+
+// Browser KeyboardEvent.code -> pynput key name
+const SPECIAL_KEYS = {
+    Space: "space",
+    Enter: "enter",
+    NumpadEnter: "enter",
+    Tab: "tab",
+    Backspace: "backspace",
+    Delete: "delete",
+    Insert: "insert",
+    Home: "home",
+    End: "end",
+    PageUp: "page_up",
+    PageDown: "page_down",
+    ArrowUp: "up",
+    ArrowDown: "down",
+    ArrowLeft: "left",
+    ArrowRight: "right",
+    ShiftLeft: "shift",
+    ShiftRight: "shift_r",
+    ControlLeft: "ctrl",
+    ControlRight: "ctrl_r",
+    AltLeft: "alt",
+    AltRight: "alt_r",
+    MetaLeft: "cmd",
+    MetaRight: "cmd_r",
+    CapsLock: "caps_lock",
+};
+
+
+// MouseEvent.button -> binding name
+const MOUSE_BUTTONS = {
+    0: "mouse_left",
+    1: "mouse_middle",
+    2: "mouse_right",
+    3: "mouse_x1",
+    4: "mouse_x2",
+};
+
+
+const MOUSE_LABELS = {
+    mouse_left: "Mouse Left",
+    mouse_middle: "Mouse Middle",
+    mouse_right: "Mouse Right",
+    mouse_x1: "Mouse Back",
+    mouse_x2: "Mouse Forward",
+};
+
+
+let listeningInput = null;
+
+
+function keyLabel(name) {
+
+    if (MOUSE_LABELS[name]) {
+        return MOUSE_LABELS[name];
+    }
+
+    if (name.length === 1) {
+        return name.toUpperCase();
+    }
+
+    return name
+        .split("_")
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+
+}
+
+
+function keyFromEvent(event) {
+
+    const code = event.code;
+
+    if (/^Key[A-Z]$/.test(code)) {
+        return code.slice(3).toLowerCase();
+    }
+
+    if (/^Digit[0-9]$/.test(code)) {
+        return code.slice(5);
+    }
+
+    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) {
+        return code.toLowerCase();
+    }
+
+    if (SPECIAL_KEYS[code]) {
+        return SPECIAL_KEYS[code];
+    }
+
+    if (event.key && event.key.length === 1) {
+        return event.key.toLowerCase();
+    }
+
+    return null;
+
+}
+
+
+function startListening(input) {
+
+    if (listeningInput) {
+        stopListening(null);
+    }
+
+    listeningInput = input;
+
+    input.classList.add("listening");
+
+    input.value = "Listening for input...";
+
+}
+
+
+// Pass a key name to bind it, or null to cancel.
+function stopListening(name) {
+
+    const input = listeningInput;
+
+    if (!input) {
+        return;
+    }
+
+    listeningInput = null;
+
+    input.classList.remove("listening");
+
+    if (name) {
+        input.dataset.key = name;
+    }
+
+    input.value = keyLabel(input.dataset.key);
+
+    input.blur();
+
+}
+
+
+document
+    .querySelectorAll(".key-bind")
+    .forEach(input => {
+
+        input.value = keyLabel(input.dataset.key);
+
+        // Start on "click" so the click that opened the
+        // box isn't captured as the new binding.
+        input.addEventListener("click", () => {
+            if (listeningInput !== input) {
+                startListening(input);
+            }
+        });
+
+    });
+
+
+document.addEventListener("keydown", event => {
+
+    if (!listeningInput) {
+        return;
+    }
+
+    event.preventDefault();
+
+    event.stopPropagation();
+
+    if (event.code === "Escape") {
+        stopListening(null);
+        return;
+    }
+
+    const name = keyFromEvent(event);
+
+    if (name) {
+        stopListening(name);
+    }
+
+}, true);
+
+
+// Set after a mouse button is bound so the rest of that
+// click (mouseup, click, right-click menu, back/forward
+// navigation) doesn't go through to the page.
+let swallowMouse = false;
+
+
+document.addEventListener("mousedown", event => {
+
+    // A new press starts a new click, so stop swallowing.
+    swallowMouse = false;
+
+    if (!listeningInput) {
+        return;
+    }
+
+    event.preventDefault();
+
+    event.stopPropagation();
+
+    const name = MOUSE_BUTTONS[event.button];
+
+    if (name) {
+        swallowMouse = true;
+        stopListening(name);
+    }
+
+}, true);
+
+
+["mouseup", "click", "auxclick", "contextmenu"].forEach(type => {
+
+    document.addEventListener(type, event => {
+
+        if (!swallowMouse && !listeningInput) {
+            return;
+        }
+
+        event.preventDefault();
+
+        event.stopPropagation();
+
+        if (type === "mouseup") {
+            setTimeout(() => { swallowMouse = false; }, 100);
+        }
+
+    }, true);
+
+});
+
+
+// =========================================================
+// SAVE SETTINGS
+// =========================================================
+
+async function saveSettings(event) {
+
+    event.preventDefault();
+
+
+    const btn =
+        document.getElementById("saveBtn");
+
+
+    if (
+        document.getElementById("trigger_key").dataset.key ===
+        document.getElementById("target_key").dataset.key
+    ) {
+
+        alert("Trigger and target can't be the same input.");
+
+        return;
+
+    }
+
+
+    const data = {
+
+        trigger_key:
+            document
+                .getElementById("trigger_key")
+                .dataset.key,
+
+        target_key:
+            document
+                .getElementById("target_key")
+                .dataset.key,
+
+        delay_ms:
+            document
+                .getElementById("delay_ms")
+                .value
+
+    };
+
+
+    try {
+
+        const res = await fetch(
+            "/api/update",
+            {
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify(data)
+            }
+        );
+
+
+        if (res.ok) {
+
+            const originalText =
+                btn.innerText;
+
+
+            btn.innerText =
+                "Settings Saved!";
+
+
+            btn.style.background =
+                "#16a34a";
+
+
+            setTimeout(() => {
+
+                btn.innerText =
+                    originalText;
+
+                btn.style.background =
+                    "";
+
+            }, 2000);
+
+        }
+
+    }
+
+    catch (error) {
+
+        console.error(
+            "Failed to save settings:",
+            error
+        );
+
+    }
+
+}
+
+
+// =========================================================
+// LOGOUT
+// =========================================================
+
+async function logout() {
+
+    document.body.innerHTML = `
+
+        <div
+            style="
+                display:flex;
+                height:100vh;
+                width:100vw;
+                justify-content:center;
+                align-items:center;
+                background:#09090b;
+                color:#22c55e;
+                font-size:1.5rem;
+                font-weight:bold;
+            "
+        >
+            Application Closed.
+            You can close this window.
+        </div>
+
+    `;
+
+
+    await fetch(
+        "/api/shutdown",
+        {
+            method: "POST"
+        }
+    );
+
+}
+
+
+</script>
 """
 
 
@@ -1085,11 +1591,12 @@ def home():
                     </label>
 
                     <input
-                        class="form-input"
+                        class="form-input key-bind"
                         type="text"
                         id="trigger_key"
                         value="{config['trigger_key']}"
-                        maxlength="1"
+                        data-key="{config['trigger_key']}"
+                        readonly
                         required
                     >
 
@@ -1099,11 +1606,12 @@ def home():
                     </label>
 
                     <input
-                        class="form-input"
+                        class="form-input key-bind"
                         type="text"
                         id="target_key"
                         value="{config['target_key']}"
-                        maxlength="1"
+                        data-key="{config['target_key']}"
+                        readonly
                         required
                     >
 
@@ -1209,243 +1717,7 @@ def home():
 </main>
 
 
-<script>
-
-
-// =========================================================
-// SIDEBAR
-// =========================================================
-
-function toggleSidebar() {
-
-    document
-        .getElementById("sidebar")
-        .classList
-        .toggle("collapsed");
-
-}
-
-
-// =========================================================
-// VIEW SWITCHING
-// =========================================================
-
-function switchView(viewName, element) {
-
-    document
-        .querySelectorAll(".nav-item")
-        .forEach(el => {
-            el.classList.remove("active");
-        });
-
-
-    element.classList.add("active");
-
-
-    document
-        .querySelectorAll(".view")
-        .forEach(el => {
-            el.classList.remove("active");
-        });
-
-
-    document
-        .getElementById("view-" + viewName)
-        .classList.add("active");
-
-}
-
-
-// =========================================================
-// TOGGLE MACRO
-// =========================================================
-
-async function toggleMacro(checkbox) {
-
-    const statusText =
-        document.getElementById("macroStatus");
-
-
-    if (checkbox.checked) {
-
-        statusText.innerText = "Enabled";
-
-        statusText.classList.remove("disabled");
-
-        statusText.classList.add("enabled");
-
-    }
-
-    else {
-
-        statusText.innerText = "Disabled";
-
-        statusText.classList.remove("enabled");
-
-        statusText.classList.add("disabled");
-
-    }
-
-
-    try {
-
-        await fetch(
-            "/api/toggle",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type": "application/json"
-                },
-
-                body: JSON.stringify({
-                    active: checkbox.checked
-                })
-            }
-        );
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Failed to update macro state:",
-            error
-        );
-
-    }
-
-}
-
-
-// =========================================================
-// SAVE SETTINGS
-// =========================================================
-
-async function saveSettings(event) {
-
-    event.preventDefault();
-
-
-    const btn =
-        document.getElementById("saveBtn");
-
-
-    const data = {
-
-        trigger_key:
-            document
-                .getElementById("trigger_key")
-                .value,
-
-        target_key:
-            document
-                .getElementById("target_key")
-                .value,
-
-        delay_ms:
-            document
-                .getElementById("delay_ms")
-                .value
-
-    };
-
-
-    try {
-
-        const res = await fetch(
-            "/api/update",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type": "application/json"
-                },
-
-                body: JSON.stringify(data)
-            }
-        );
-
-
-        if (res.ok) {
-
-            const originalText =
-                btn.innerText;
-
-
-            btn.innerText =
-                "Settings Saved!";
-
-
-            btn.style.background =
-                "#16a34a";
-
-
-            setTimeout(() => {
-
-                btn.innerText =
-                    originalText;
-
-                btn.style.background =
-                    "";
-
-            }, 2000);
-
-        }
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Failed to save settings:",
-            error
-        );
-
-    }
-
-}
-
-
-// =========================================================
-// LOGOUT
-// =========================================================
-
-async function logout() {
-
-    document.body.innerHTML = `
-
-        <div
-            style="
-                display:flex;
-                height:100vh;
-                width:100vw;
-                justify-content:center;
-                align-items:center;
-                background:#09090b;
-                color:#22c55e;
-                font-size:1.5rem;
-                font-weight:bold;
-            "
-        >
-            Application Closed.
-            You can close this window.
-        </div>
-
-    `;
-
-
-    await fetch(
-        "/api/shutdown",
-        {
-            method: "POST"
-        }
-    );
-
-}
-
-
-</script>
+{DASHBOARD_JS}
 
 
 </body>
@@ -1469,26 +1741,33 @@ def update_config():
         }), 400
 
 
-    config["trigger_key"] = (
-        str(
-            data.get(
-                "trigger_key",
-                config["trigger_key"]
-            )
-        )
-        .lower()
+    trigger_key = normalize_key_name(
+        data.get("trigger_key", config["trigger_key"])
+    )
+
+    target_key = normalize_key_name(
+        data.get("target_key", config["target_key"])
     )
 
 
-    config["target_key"] = (
-        str(
-            data.get(
-                "target_key",
-                config["target_key"]
-            )
-        )
-        .lower()
-    )
+    if (
+        resolve_output(trigger_key) is None
+        or resolve_output(target_key) is None
+    ):
+        return jsonify({
+            "error": "Unsupported key"
+        }), 400
+
+
+    if trigger_key == target_key:
+        return jsonify({
+            "error": "Trigger and target can't be the same"
+        }), 400
+
+
+    config["trigger_key"] = trigger_key
+
+    config["target_key"] = target_key
 
 
     try:
@@ -1580,64 +1859,161 @@ def run_server():
 
 
 # =========================================================
-# KEYBOARD LISTENER
+# INPUT NAMES
+# =========================================================
+#
+# Bindings are stored as strings:
+#   "e", "1", ...           single character keys
+#   "space", "shift", "f1"  pynput Key names
+#   "mouse_left", ...       mouse buttons (left, right, middle, x1, x2)
+
+KEY_ALIASES = {
+    "shift_l": "shift",
+    "ctrl_l": "ctrl",
+    "alt_l": "alt",
+    "alt_gr": "alt_r",
+    "cmd_l": "cmd",
+}
+
+
+# Linux (Xorg) reports the side buttons as button8 / button9.
+MOUSE_ALIASES = {
+    "button8": "x1",
+    "button9": "x2",
+}
+
+
+def normalize_key_name(name):
+
+    name = str(name).strip().lower()
+
+    return KEY_ALIASES.get(name, name)
+
+
+def key_to_name(key):
+
+    if isinstance(key, keyboard.Key):
+        return KEY_ALIASES.get(key.name, key.name)
+
+    vk = getattr(key, "vk", None)
+
+    # Use the virtual key code for letters/digits so the
+    # binding still matches while Shift or Ctrl is held.
+    if vk is not None and (65 <= vk <= 90 or 48 <= vk <= 57):
+        return chr(vk).lower()
+
+    if key.char:
+        return key.char.lower()
+
+    return None
+
+
+def button_to_name(button):
+
+    return "mouse_" + MOUSE_ALIASES.get(button.name, button.name)
+
+
+def resolve_output(name):
+    """Turn a binding name into (controller, key/button) or None."""
+
+    if name.startswith("mouse_"):
+
+        button_name = name[len("mouse_"):]
+
+        for candidate in (
+            button_name,
+            {"x1": "button8", "x2": "button9"}.get(button_name),
+        ):
+            if candidate and hasattr(mouse.Button, candidate):
+                return (
+                    mouse_controller,
+                    getattr(mouse.Button, candidate),
+                )
+
+        return None
+
+    if len(name) == 1:
+        return (controller, name)
+
+    if name in keyboard.Key.__members__:
+        return (controller, keyboard.Key[name])
+
+    return None
+
+
+# =========================================================
+# INPUT LISTENERS
 # =========================================================
 
-def on_press(key):
+def trigger_down():
 
     global is_pressed
 
 
-    if not config["active"]:
+    if not config["active"] or is_pressed:
         return
 
 
-    try:
-
-        if (
-            key.char == config["trigger_key"]
-            and not is_pressed
-        ):
-
-            is_pressed = True
+    is_pressed = True
 
 
-            time.sleep(
-                config["delay_ms"] / 1000.0
-            )
+    time.sleep(
+        config["delay_ms"] / 1000.0
+    )
 
 
-            # Make sure the macro wasn't
-            # disabled during the delay.
-            if config["active"]:
+    with press_lock:
 
-                controller.press(
-                    config["target_key"]
-                )
+        # Make sure the macro wasn't disabled and the
+        # trigger wasn't released during the delay.
+        if not (config["active"] and is_pressed):
+            return
 
-    except AttributeError:
+        output = resolve_output(config["target_key"])
 
-        pass
+        if output:
+            output[0].press(output[1])
+
+
+def trigger_up():
+
+    global is_pressed
+
+
+    with press_lock:
+
+        if not is_pressed:
+            return
+
+        is_pressed = False
+
+        output = resolve_output(config["target_key"])
+
+        if output:
+            output[0].release(output[1])
+
+
+def on_press(key):
+
+    if key_to_name(key) == config["trigger_key"]:
+        trigger_down()
 
 
 def on_release(key):
 
-    global is_pressed
+    if key_to_name(key) == config["trigger_key"]:
+        trigger_up()
 
 
-    try:
+def on_click(x, y, button, pressed):
 
-        if key.char == config["trigger_key"]:
+    if button_to_name(button) != config["trigger_key"]:
+        return
 
-            is_pressed = False
-
-            controller.release(
-                config["target_key"]
-            )
-
-    except AttributeError:
-
-        pass
+    if pressed:
+        trigger_down()
+    else:
+        trigger_up()
 
 
 # =========================================================
@@ -1666,6 +2042,13 @@ if __name__ == "__main__":
     webbrowser.open(
         "http://127.0.0.1:5000"
     )
+
+
+    mouse_listener = mouse.Listener(
+        on_click=on_click
+    )
+
+    mouse_listener.start()
 
 
     with keyboard.Listener(
