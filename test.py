@@ -7,6 +7,7 @@ import uuid
 import urllib.request
 import urllib.error
 import json
+import hashlib
 import os
 import socket
 import sys
@@ -63,6 +64,14 @@ license_state = {
 license_lock = threading.Lock()
 
 
+# Set when the license server says this copy of the app isn't an
+# approved build. The login screen shows it and stays locked.
+integrity_state = {
+    "checked": False,
+    "message": None,
+}
+
+
 # =========================================================
 # SYSTEM INFO
 # =========================================================
@@ -116,6 +125,44 @@ def get_hwid():
         pass
 
     return str(uuid.getnode())
+
+
+def app_file():
+
+    # The file actually running: the .exe when packaged with
+    # PyInstaller, otherwise this script.
+    if getattr(sys, "frozen", False):
+        return sys.executable
+
+    return os.path.abspath(__file__)
+
+
+def compute_app_hash():
+
+    # Must match file_hash() in license_server.py: scripts are hashed
+    # with LF line endings so a CRLF checkout gets the same hash.
+    path = app_file()
+
+    with open(path, "rb") as f:
+        content = f.read()
+
+    if path.lower().endswith(".py"):
+        content = content.replace(b"\r\n", b"\n")
+
+    return hashlib.sha256(content).hexdigest()
+
+
+_app_hash_cache = None
+
+
+def app_hash():
+
+    global _app_hash_cache
+
+    if _app_hash_cache is None:
+        _app_hash_cache = compute_app_hash()
+
+    return _app_hash_cache
 
 
 _hwid_cache = None
@@ -211,7 +258,7 @@ def license_request(path, payload):
 
     # Returns (response_json, error_message, http_status).
     body = json.dumps(
-        {**payload, "hwid": cached_hwid()}
+        {**payload, "hwid": cached_hwid(), "app_hash": app_hash()}
     ).encode("utf8")
 
     req = urllib.request.Request(
@@ -229,11 +276,17 @@ def license_request(path, payload):
     except urllib.error.HTTPError as e:
 
         try:
-            message = json.loads(e.read().decode("utf8")).get("error")
+            body = json.loads(e.read().decode("utf8"))
         except Exception:
-            message = None
+            body = {}
 
-        return None, message or f"License server error ({e.code}).", e.code
+        message = body.get("error") or f"License server error ({e.code})."
+
+        if body.get("modified"):
+            integrity_state["checked"] = True
+            integrity_state["message"] = message
+
+        return None, message, e.code
 
     except Exception:
 
@@ -291,6 +344,22 @@ def remaining_seconds():
 def license_active():
 
     return remaining_seconds() > 0
+
+
+def check_integrity():
+
+    # Asks the license server whether this build is approved. Returns
+    # the error message if it isn't, else None. If the server can't
+    # be reached it's asked again next time; login fails anyway.
+    if not integrity_state["checked"]:
+
+        data, err, status = license_request("/api/integrity", {})
+
+        if data:
+            integrity_state["checked"] = True
+            integrity_state["message"] = None
+
+    return integrity_state["message"]
 
 
 def license_sync_loop():
@@ -1481,6 +1550,28 @@ COMMON_CSS = """
     }
 
 
+    .auth-card button:disabled,
+    .auth-card input:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+
+    .integrity-banner {
+        margin-bottom: 16px;
+        padding: 12px 14px;
+
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid var(--off);
+        border-radius: 10px;
+
+        color: var(--off);
+
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+
     .auth-hwid {
         margin-top: 18px;
 
@@ -2090,6 +2181,9 @@ LOGIN_PAGE = """
                 </h2>
 
 
+                __INTEGRITY__
+
+
                 <div class="auth-tabs">
 
                     <button class="auth-tab active" id="tabLogin" onclick="setMode('login')">
@@ -2173,6 +2267,16 @@ __COMMON_JS__
 <script>
 
 let mode = "login";
+
+
+// A modified or outdated build can't log in, so lock the form.
+if (document.getElementById("integrityMsg")) {
+
+    document
+        .querySelectorAll(".auth-tab, #authForm input, #authForm button")
+        .forEach(el => { el.disabled = true; });
+
+}
 
 
 function setMode(next) {
@@ -3082,10 +3186,18 @@ ADMIN_ACTIONS = {
 
 def render_login():
 
+    message = check_integrity()
+
+    banner = (
+        f'<div class="integrity-banner" id="integrityMsg">{html_escape(message)}</div>'
+        if message else ""
+    )
+
     return (
         LOGIN_PAGE
         .replace("__COMMON_CSS__", COMMON_CSS)
         .replace("__COMMON_JS__", COMMON_JS)
+        .replace("__INTEGRITY__", banner)
         .replace("__HWID__", html_escape(cached_hwid()))
     )
 
@@ -4072,6 +4184,14 @@ def on_release(key):
 # =========================================================
 
 if __name__ == "__main__":
+
+    # Print this build's hash for approvebuild on the license server.
+    if "--hash" in sys.argv:
+
+        print(app_hash())
+
+        sys.exit(0)
+
 
     relaunch_without_console()
 

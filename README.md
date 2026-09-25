@@ -52,6 +52,45 @@ account still has.
 | `createadmin <username>` | Create an admin account (asks for a password) |
 | `setadmin <username> [--off]` | Give or remove admin rights |
 
+## Build check
+
+The app sends a SHA-256 hash of itself (`test.py`, or the `.exe` if you
+package it) with every request to the license server. If the server has
+any approved builds, a copy whose hash isn't on the list can't log in or
+register, and anyone already logged in is signed out at the next sync.
+The login screen shows:
+
+> This copy of the app has been modified or is out of date. Download the
+> official version to continue.
+
+**Every time you change `test.py`, approve the new build** or nobody can
+log in with it:
+
+```
+python license_server.py approvebuild test.py --label v1.2
+```
+
+If the server doesn't have your copy of `test.py`, print the hash on
+your PC with `python test.py --hash` and approve that instead:
+
+```
+python license_server.py approvebuild <hash> --label v1.2
+```
+
+| Command | What it does |
+|---|---|
+| `approvebuild <file or hash> [--label ...]` | Allow a build to log in |
+| `listbuilds` | Show approved builds |
+| `revokebuild <hash>` | Block a build, e.g. an old version |
+
+With no approved builds the check is off. Old builds keep working until
+you revoke them. Line endings don't matter: a `.py` file gives the same
+hash whether it's saved with Windows or Linux line endings.
+
+This stops people editing the script and logging in with it. It can't
+stop someone determined, because the app itself works out the hash it
+sends, so a cracked copy could send an approved hash instead.
+
 ## Admin Panel
 
 Admin accounts see an **Admin Panel** in the app's side menu with every

@@ -20,6 +20,12 @@ Other admin commands:
     python license_server.py deleteuser <username>
     python license_server.py ban <username> / unban <username>
 
+Approved app builds (see "Build check" in the README):
+    python license_server.py approvebuild test.py [--label v1.2]
+    python license_server.py approvebuild <sha256-hash>
+    python license_server.py listbuilds
+    python license_server.py revokebuild <sha256-hash>
+
 Admin accounts (see the Admin Panel in the app):
     python license_server.py createadmin admin
     python license_server.py setadmin <username> [--off]
@@ -27,6 +33,7 @@ Admin accounts (see the Admin Panel in the app):
 
 import argparse
 import getpass
+import hashlib
 import os
 import re
 import secrets
@@ -91,6 +98,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT    PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS approved_builds (
+    hash       TEXT    PRIMARY KEY,
+    label      TEXT,
+    created_at INTEGER NOT NULL
 );
 """
 
@@ -208,6 +221,30 @@ def read_json():
 
 BANNED_MESSAGE = "This account has been banned."
 
+MODIFIED_MESSAGE = (
+    "This copy of the app has been modified or is out of date. "
+    "Download the official version to continue."
+)
+
+
+def build_approved(conn, data):
+
+    # With no approved builds the check is off, so a fresh server
+    # doesn't lock everyone out before approvebuild has been run.
+    if conn.execute("SELECT 1 FROM approved_builds LIMIT 1").fetchone() is None:
+        return True
+
+    app_hash = str(data.get("app_hash", "")).strip().lower()
+
+    return conn.execute(
+        "SELECT 1 FROM approved_builds WHERE hash = ?", (app_hash,)
+    ).fetchone() is not None
+
+
+def build_error():
+
+    return jsonify({"error": MODIFIED_MESSAGE, "modified": True}), 403
+
 
 def session_user(conn, data):
 
@@ -220,6 +257,9 @@ def session_user(conn, data):
 
     if user["banned"]:
         return None, error(BANNED_MESSAGE, 403)
+
+    if not build_approved(conn, data):
+        return None, build_error()
 
     if user["hwid"] != str(data.get("hwid", "")).strip():
         return None, error("Hardware ID mismatch.", 403)
@@ -251,6 +291,9 @@ def register():
 
 
     with get_db() as conn:
+
+        if not build_approved(conn, data):
+            return build_error()
 
         try:
 
@@ -293,6 +336,9 @@ def login():
 
     with get_db() as conn:
 
+        if not build_approved(conn, data):
+            return build_error()
+
         user = conn.execute(
             "SELECT * FROM users WHERE username = ?", (username,)
         ).fetchone()
@@ -328,6 +374,18 @@ def login():
 
 
     return jsonify({"ok": True, "token": token, **license_payload(user)})
+
+
+@app.route("/api/integrity", methods=["POST"])
+def integrity():
+
+    # Checked by the app when it opens, before anyone logs in.
+    with get_db() as conn:
+
+        if not build_approved(conn, read_json()):
+            return build_error()
+
+    return jsonify({"ok": True})
 
 
 @app.route("/api/status", methods=["POST"])
@@ -926,6 +984,81 @@ def cmd_deleteuser(args):
     print(f"Deleted {user['username']}.")
 
 
+def file_hash(path):
+
+    # Must match app_hash() in test.py: scripts are hashed with
+    # LF line endings so a Windows CRLF checkout gets the same hash.
+    with open(path, "rb") as f:
+        content = f.read()
+
+    if path.lower().endswith(".py"):
+        content = content.replace(b"\r\n", b"\n")
+
+    return hashlib.sha256(content).hexdigest()
+
+
+HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def cmd_approvebuild(args):
+
+    init_db()
+
+    target = args.target.strip()
+
+    if HASH_RE.match(target.lower()):
+        build_hash = target.lower()
+    elif os.path.isfile(target):
+        build_hash = file_hash(target)
+    else:
+        sys.exit(f"{target!r} is not a file or a SHA-256 hash.")
+
+
+    with get_db() as conn:
+
+        conn.execute(
+            "INSERT OR REPLACE INTO approved_builds (hash, label, created_at) VALUES (?, ?, ?)",
+            (build_hash, args.label, now())
+        )
+
+    print(f"Approved build {build_hash}" + (f" ({args.label})" if args.label else ""))
+
+
+def cmd_listbuilds(args):
+
+    init_db()
+
+    with get_db() as conn:
+
+        rows = conn.execute(
+            "SELECT * FROM approved_builds ORDER BY created_at"
+        ).fetchall()
+
+
+    if not rows:
+        print("No approved builds; the build check is off.")
+        return
+
+    for row in rows:
+        print(f"{row['hash']}  {row['label'] or ''}")
+
+
+def cmd_revokebuild(args):
+
+    init_db()
+
+    with get_db() as conn:
+
+        deleted = conn.execute(
+            "DELETE FROM approved_builds WHERE hash = ?", (args.hash.strip().lower(),)
+        )
+
+    if deleted.rowcount != 1:
+        sys.exit("No approved build with that hash.")
+
+    print("Build revoked.")
+
+
 def main():
 
     parser = argparse.ArgumentParser(description="Yakuza Solutions license server")
@@ -979,6 +1112,19 @@ def main():
     p = sub.add_parser("deleteuser", help="delete an account")
     p.add_argument("username")
     p.set_defaults(func=cmd_deleteuser)
+
+
+    p = sub.add_parser("approvebuild", help="allow an app build to log in")
+    p.add_argument("target", help="path to the app file, or its SHA-256 hash")
+    p.add_argument("--label", help="note to remember the build by, e.g. v1.2")
+    p.set_defaults(func=cmd_approvebuild)
+
+    p = sub.add_parser("listbuilds", help="list approved app builds")
+    p.set_defaults(func=cmd_listbuilds)
+
+    p = sub.add_parser("revokebuild", help="stop an app build from logging in")
+    p.add_argument("hash")
+    p.set_defaults(func=cmd_revokebuild)
 
 
     args = parser.parse_args()
