@@ -284,6 +284,20 @@ def status():
     return jsonify({"ok": True, **license_payload(user)})
 
 
+@app.route("/api/logout", methods=["POST"])
+def logout():
+
+    data = read_json()
+
+    with get_db() as conn:
+
+        conn.execute(
+            "DELETE FROM sessions WHERE token = ?", (str(data.get("token", "")),)
+        )
+
+    return jsonify({"ok": True})
+
+
 @app.route("/api/redeem", methods=["POST"])
 def redeem():
 

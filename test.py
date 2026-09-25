@@ -2074,32 +2074,16 @@ async function saveAutoBuild(event) {
 
 async function logout() {
 
-    document.body.innerHTML = `
+    try {
 
-        <div
-            style="
-                display:flex;
-                height:100vh;
-                width:100vw;
-                justify-content:center;
-                align-items:center;
-                background:#06080d;
-                color:#cfeeff;
-                font-family:Oxanium, sans-serif;
-                letter-spacing:0.1em;
-                text-shadow:0 0 10px rgba(92,200,255,0.6);
-                font-size:1.5rem;
-                font-weight:bold;
-            "
-        >
-            Application Closed.
-            You can close this window.
-        </div>
+        await postJSON("/api/logout");
 
-    `;
+    }
+
+    catch (error) {}
 
 
-    await fetch("/api/shutdown", { method: "POST" });
+    window.location.href = "/";
 
 }
 
@@ -2698,6 +2682,23 @@ def license_status():
         "username": license_state["username"],
         "remaining_seconds": remaining_seconds(),
     })
+
+
+@app.route("/api/logout", methods=["POST"])
+def account_logout():
+
+    token = license_state["token"]
+
+    clear_license()
+
+
+    # Also end the session on the license server. The local
+    # logout already happened, so a failure here is ignored.
+    if token:
+        license_request("/api/logout", {"token": token})
+
+
+    return jsonify({"status": "success"})
 
 
 @app.route("/api/redeem", methods=["POST"])
