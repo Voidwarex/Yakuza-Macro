@@ -54,6 +54,7 @@ license_state = {
     "username": None,
     "remaining": 0.0,
     "synced_at": 0.0,
+    "is_admin": False,
 }
 
 license_lock = threading.Lock()
@@ -181,6 +182,9 @@ def apply_license(data, token=None):
 
         license_state["synced_at"] = time.monotonic()
 
+        if "is_admin" in data:
+            license_state["is_admin"] = bool(data["is_admin"])
+
 
 def clear_license():
 
@@ -189,6 +193,7 @@ def clear_license():
         license_state["token"] = None
         license_state["username"] = None
         license_state["remaining"] = 0.0
+        license_state["is_admin"] = False
 
 
 def logged_in():
@@ -1402,6 +1407,323 @@ COMMON_CSS = """
     }
 
 
+    /* =====================================================
+       ADMIN PANEL
+       ===================================================== */
+
+    .admin-card {
+        max-width: 1180px;
+    }
+
+
+    .admin-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 14px;
+
+        margin-bottom: 28px;
+    }
+
+
+    .stat-tile {
+        padding: 14px 16px;
+
+        background: rgba(3, 4, 8, 0.55);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+    }
+
+
+    .stat-value {
+        margin-top: 6px;
+
+        font-family: var(--font-display);
+        font-size: 1.6rem;
+        font-weight: 700;
+
+        color: var(--bolt-bright);
+    }
+
+
+    .stat-sub {
+        margin-top: 2px;
+
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+    }
+
+
+    .admin-section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+
+        margin: 8px 0 12px;
+    }
+
+
+    .admin-section-title h3 {
+        font-family: var(--font-display);
+        font-size: 0.85rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+
+        color: var(--text-primary);
+    }
+
+
+    .admin-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+
+    .admin-tools .form-input,
+    .admin-tools select.form-input {
+        width: auto;
+        margin-top: 0;
+        padding: 8px 12px;
+        font-size: 0.85rem;
+    }
+
+
+    select.form-input {
+        width: 100%;
+        padding: 11px 14px;
+        margin-top: 8px;
+
+        background: rgba(3, 4, 8, 0.65);
+        color: var(--text-primary);
+
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+
+        font-family: var(--font-mono);
+        outline: none;
+    }
+
+
+    .table-wrap {
+        overflow-x: auto;
+
+        margin-bottom: 30px;
+
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+    }
+
+
+    .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+
+        font-size: 0.88rem;
+    }
+
+
+    .admin-table th {
+        position: sticky;
+        top: 0;
+
+        padding: 10px 12px;
+
+        background: #0d121b;
+
+        text-align: left;
+
+        font-family: var(--font-display);
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+
+        color: var(--text-muted);
+
+        white-space: nowrap;
+    }
+
+
+    .admin-table td {
+        padding: 10px 12px;
+
+        border-top: 1px solid var(--panel-border);
+
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+
+    .admin-table tr:hover td {
+        background: rgba(150, 180, 215, 0.04);
+    }
+
+
+    .admin-table .mono {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+    }
+
+
+    .admin-table .muted {
+        color: var(--text-muted);
+    }
+
+
+    .user-name {
+        margin-right: 8px;
+        font-weight: 600;
+    }
+
+
+    .hwid-cell {
+        max-width: 130px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+
+    .badge {
+        display: inline-block;
+
+        padding: 2px 8px;
+        margin-right: 4px;
+
+        border-radius: 999px;
+        border: 1px solid currentColor;
+
+        font-family: var(--font-display);
+        font-size: 0.62rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+    }
+
+
+    .badge.active  { color: var(--on); }
+    .badge.expired { color: var(--text-muted); }
+    .badge.banned  { color: var(--off); }
+    .badge.admin   { color: var(--storm-violet); }
+
+
+    .online-dot {
+        display: inline-block;
+
+        width: 7px;
+        height: 7px;
+        margin-right: 6px;
+
+        border-radius: 50%;
+
+        background: #3a4455;
+    }
+
+
+    .online-dot.on {
+        background: var(--on);
+        box-shadow: 0 0 6px var(--on);
+    }
+
+
+    .row-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+
+    .row-actions input.form-input {
+        width: 70px;
+        margin-top: 0;
+        padding: 6px 8px;
+        font-size: 0.8rem;
+    }
+
+
+    .btn-sm {
+        padding: 6px 10px;
+
+        background: rgba(150, 180, 215, 0.08);
+        color: var(--text-primary);
+
+        border: 1px solid var(--panel-border-strong);
+        border-radius: 7px;
+
+        font-family: var(--font-display);
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+
+        cursor: pointer;
+        white-space: nowrap;
+
+        transition: all 0.15s ease;
+    }
+
+
+    .btn-sm:hover {
+        border-color: var(--bolt);
+        color: var(--bolt-bright);
+    }
+
+
+    .btn-sm.primary {
+        background: linear-gradient(180deg, #2a8fd0, #17608f);
+        border-color: rgba(92, 200, 255, 0.5);
+    }
+
+
+    .btn-sm.danger {
+        color: var(--off);
+        border-color: rgba(255, 77, 98, 0.4);
+    }
+
+
+    .btn-sm.danger:hover {
+        background: rgba(255, 77, 98, 0.1);
+        color: #ff8595;
+    }
+
+
+    .btn-sm:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+
+
+    .new-keys {
+        width: 100%;
+        min-height: 90px;
+        margin-bottom: 14px;
+
+        padding: 10px 12px;
+
+        background: rgba(3, 4, 8, 0.65);
+        color: var(--bolt-bright);
+
+        border: 1px solid rgba(92, 200, 255, 0.4);
+        border-radius: 8px;
+
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+
+        resize: vertical;
+    }
+
+
+    .empty-row td {
+        text-align: center;
+        color: var(--text-muted);
+        padding: 22px;
+    }
+
+
     @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -1499,6 +1821,19 @@ COMMON_CSS = """
             stroke-linejoin="round">
 
             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+
+        </symbol>
+
+        <symbol
+            id="icon-shield"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round">
+
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
 
         </symbol>
 
@@ -2093,6 +2428,508 @@ async function logout() {
 
 
 # =========================================================
+# ADMIN PANEL (only rendered for admin accounts)
+# =========================================================
+
+ADMIN_NAV = """
+        <a
+            class="nav-item"
+            onclick="switchView('admin', this); loadAdmin();"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-shield"></use>
+            </svg>
+
+            <span>Admin Panel</span>
+
+        </a>
+"""
+
+
+ADMIN_VIEW = """
+        <!-- ADMIN PANEL -->
+
+        <div
+            id="view-admin"
+            class="view"
+        >
+
+            <div class="card admin-card">
+
+
+                <div class="card-header">
+
+                    <h2>
+                        Admin Panel
+                    </h2>
+
+                    <button class="btn-sm" onclick="loadAdmin()">
+                        Refresh
+                    </button>
+
+                </div>
+
+
+                <div class="admin-stats" id="adminStats"></div>
+
+
+                <!-- USERS -->
+
+                <div class="admin-section-title">
+
+                    <h3>Users</h3>
+
+                    <div class="admin-tools">
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="userSearch"
+                            placeholder="Search username / HWID"
+                            oninput="renderUsers()"
+                        >
+
+                    </div>
+
+                </div>
+
+
+                <div class="table-wrap">
+
+                    <table class="admin-table">
+
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Time Left</th>
+                                <th>HWID</th>
+                                <th>Last Login</th>
+                                <th>Keys</th>
+                                <th>Time (days)</th>
+                                <th>Account</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="usersBody"></tbody>
+
+                    </table>
+
+                </div>
+
+
+                <!-- KEYS -->
+
+                <div class="admin-section-title">
+
+                    <h3>License Keys</h3>
+
+                    <div class="admin-tools">
+
+                        <select class="form-input" id="genType">
+                            <option value="day">Day</option>
+                            <option value="week">Week</option>
+                            <option value="month">Month</option>
+                        </select>
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="genCount"
+                            value="5"
+                            min="1"
+                            max="100"
+                            style="width: 80px"
+                        >
+
+                        <button class="btn-sm primary" onclick="generateKeys()">
+                            Generate
+                        </button>
+
+                        <select class="form-input" id="keyFilter" onchange="renderKeys()">
+                            <option value="all">All keys</option>
+                            <option value="unused">Unused</option>
+                            <option value="used">Used</option>
+                        </select>
+
+                    </div>
+
+                </div>
+
+
+                <textarea
+                    class="new-keys"
+                    id="newKeys"
+                    readonly
+                    style="display: none"
+                ></textarea>
+
+
+                <div class="table-wrap">
+
+                    <table class="admin-table">
+
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Type</th>
+                                <th>Created</th>
+                                <th>Redeemed By</th>
+                                <th>Redeemed At</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="keysBody"></tbody>
+
+                    </table>
+
+                </div>
+
+
+                <div class="form-msg" id="adminMsg"></div>
+
+
+            </div>
+
+        </div>
+"""
+
+
+ADMIN_JS = """
+<script>
+
+
+let adminData = null;
+
+
+function el(tag, attrs, children) {
+
+    const node = document.createElement(tag);
+
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+
+        if (k === "text") node.textContent = v;
+        else if (k === "onclick") node.addEventListener("click", v);
+        else node.setAttribute(k, v);
+
+    });
+
+    (children || []).forEach(c => node.appendChild(c));
+
+    return node;
+
+}
+
+
+function fmtDate(ts) {
+
+    return ts
+        ? new Date(ts * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })
+        : "-";
+
+}
+
+
+function adminMsg(text, ok) {
+
+    showMsg(document.getElementById("adminMsg"), text, ok);
+
+}
+
+
+async function adminCall(action, data) {
+
+    const res = await postJSON("/api/admin/" + action, data);
+
+    if (!res.ok) {
+        adminMsg(res.body.error || "Admin request failed.", false);
+    }
+
+    return res;
+
+}
+
+
+async function loadAdmin() {
+
+    const res = await adminCall("overview", {});
+
+    if (!res.ok) return;
+
+    adminData = res.body;
+
+    renderStats();
+    renderUsers();
+    renderKeys();
+
+}
+
+
+function renderStats() {
+
+    const s = adminData.stats;
+
+    const tiles = [
+        ["Users", s.users, ""],
+        ["Active Licenses", s.active_licenses, ""],
+        ["Banned", s.banned, ""],
+        ["Keys", s.keys_total,
+            "unused: " + s.keys_unused.day + "d / " + s.keys_unused.week + "w / " + s.keys_unused.month + "m"],
+    ];
+
+    const box = document.getElementById("adminStats");
+
+    box.replaceChildren(...tiles.map(([label, value, sub]) =>
+        el("div", { class: "stat-tile" }, [
+            el("div", { class: "license-label", text: label }),
+            el("div", { class: "stat-value", text: String(value) }),
+            el("div", { class: "stat-sub", text: sub }),
+        ])
+    ));
+
+}
+
+
+function renderUsers() {
+
+    const body = document.getElementById("usersBody");
+
+    const q = document.getElementById("userSearch").value.trim().toLowerCase();
+
+    const users = adminData.users.filter(u =>
+        !q ||
+        u.username.toLowerCase().includes(q) ||
+        (u.hwid || "").toLowerCase().includes(q)
+    );
+
+
+    if (!users.length) {
+
+        body.replaceChildren(
+            el("tr", { class: "empty-row" }, [el("td", { colspan: "7", text: "No users found." })])
+        );
+
+        return;
+
+    }
+
+
+    body.replaceChildren(...users.map(u => {
+
+        const badges = [];
+
+        if (u.is_admin) badges.push(el("span", { class: "badge admin", text: "Admin" }));
+
+        if (u.banned) badges.push(el("span", { class: "badge banned", text: "Banned" }));
+        else if (u.remaining_seconds > 0) badges.push(el("span", { class: "badge active", text: "Active" }));
+        else badges.push(el("span", { class: "badge expired", text: "Expired" }));
+
+
+        const days = el("input", {
+            class: "form-input",
+            type: "number",
+            step: "any",
+            value: "1",
+            title: "Days (decimals allowed, e.g. 0.5)"
+        });
+
+        const timeActions = el("div", { class: "row-actions" }, [
+            days,
+            el("button", { class: "btn-sm", text: "Add",
+                onclick: () => changeTime(u.username, "addtime", Number(days.value)) }),
+            el("button", { class: "btn-sm", text: "Take",
+                onclick: () => changeTime(u.username, "addtime", -Number(days.value)) }),
+            el("button", { class: "btn-sm", text: "Set",
+                onclick: () => changeTime(u.username, "settime", Number(days.value)) }),
+        ]);
+
+
+        const banBtn = el("button", {
+            class: "btn-sm danger",
+            text: u.banned ? "Unban" : "Ban",
+            onclick: () => setBan(u.username, !u.banned)
+        });
+
+        if (u.is_admin) banBtn.disabled = true;
+
+
+        const accountActions = el("div", { class: "row-actions" }, [
+            banBtn,
+            el("button", { class: "btn-sm", text: "Reset HWID",
+                onclick: () => resetHwid(u.username) }),
+        ]);
+
+
+        return el("tr", {}, [
+            el("td", { title: "Joined " + fmtDate(u.created_at) }, [
+                el("span", { class: "online-dot" + (u.online ? " on" : ""),
+                    title: u.online ? "Has an active session" : "No active session" }),
+                el("span", { class: "user-name", text: u.username }),
+                ...badges,
+            ]),
+            el("td", { class: "mono", text: formatRemaining(u.remaining_seconds) }),
+            el("td", { class: "mono muted hwid-cell", title: u.hwid || "", text: u.hwid || "-" }),
+            el("td", { class: "muted", text: fmtDate(u.last_login) }),
+            el("td", { text: String(u.keys_redeemed) }),
+            el("td", {}, [timeActions]),
+            el("td", {}, [accountActions]),
+        ]);
+
+    }));
+
+}
+
+
+function renderKeys() {
+
+    const body = document.getElementById("keysBody");
+
+    const filter = document.getElementById("keyFilter").value;
+
+    const keys = adminData.keys.filter(k =>
+        filter === "all" ||
+        (filter === "unused" && !k.redeemed_by) ||
+        (filter === "used" && k.redeemed_by)
+    );
+
+
+    if (!keys.length) {
+
+        body.replaceChildren(
+            el("tr", { class: "empty-row" }, [el("td", { colspan: "6", text: "No keys." })])
+        );
+
+        return;
+
+    }
+
+
+    body.replaceChildren(...keys.map(k => {
+
+        const actions = [];
+
+        if (!k.redeemed_by) {
+
+            actions.push(el("button", { class: "btn-sm", text: "Copy",
+                onclick: () => navigator.clipboard.writeText(k.key).then(() => adminMsg("Copied " + k.key, true)) }));
+
+            actions.push(el("button", { class: "btn-sm danger", text: "Delete",
+                onclick: () => deleteKey(k.key) }));
+
+        }
+
+
+        return el("tr", {}, [
+            el("td", { class: "mono", text: k.key }),
+            el("td", { text: k.key_type + " (" + k.duration_days + "d)" }),
+            el("td", { class: "muted", text: fmtDate(k.created_at) }),
+            el("td", { text: k.redeemed_by || "-" }),
+            el("td", { class: "muted", text: fmtDate(k.redeemed_at) }),
+            el("td", {}, [el("div", { class: "row-actions" }, actions)]),
+        ]);
+
+    }));
+
+}
+
+
+async function changeTime(username, action, days) {
+
+    if (!isFinite(days)) {
+        adminMsg("Enter a number of days.", false);
+        return;
+    }
+
+    const res = await adminCall(action, { username: username, days: days });
+
+    if (res.ok) {
+        adminMsg(username + " now has " + formatRemaining(res.body.remaining_seconds) + ".", true);
+        loadAdmin();
+        syncLicense();
+    }
+
+}
+
+
+async function setBan(username, banned) {
+
+    if (banned && !confirm("Ban " + username + "? They will be logged out and locked out.")) return;
+
+    const res = await adminCall("ban", { username: username, banned: banned });
+
+    if (res.ok) {
+        adminMsg(username + (banned ? " banned." : " unbanned."), true);
+        loadAdmin();
+    }
+
+}
+
+
+async function resetHwid(username) {
+
+    if (!confirm("Reset HWID for " + username + "? Their next login will lock to a new PC.")) return;
+
+    const res = await adminCall("resethwid", { username: username });
+
+    if (res.ok) {
+        adminMsg("HWID reset for " + username + ".", true);
+        loadAdmin();
+    }
+
+}
+
+
+async function generateKeys() {
+
+    const res = await adminCall("genkeys", {
+        key_type: document.getElementById("genType").value,
+        count: Number(document.getElementById("genCount").value)
+    });
+
+    if (!res.ok) return;
+
+
+    const box = document.getElementById("newKeys");
+
+    box.value = res.body.keys.join("\\n");
+
+    box.style.display = "block";
+
+    box.select();
+
+
+    adminMsg("Generated " + res.body.keys.length + " key(s). They're selected above, ready to copy.", true);
+
+    loadAdmin();
+
+}
+
+
+async function deleteKey(key) {
+
+    if (!confirm("Delete unused key " + key + "?")) return;
+
+    const res = await adminCall("deletekey", { key: key });
+
+    if (res.ok) {
+        adminMsg("Deleted " + key + ".", true);
+        loadAdmin();
+    }
+
+}
+
+
+</script>
+"""
+
+
+ADMIN_ACTIONS = {
+    "overview", "addtime", "settime", "ban", "resethwid", "genkeys", "deletekey",
+}
+
+
+# =========================================================
 # PAGES
 # =========================================================
 
@@ -2177,6 +3014,15 @@ def home():
     locked = "" if remaining > 0 else "locked"
 
 
+    is_admin = license_state["is_admin"]
+
+    admin_nav = ADMIN_NAV if is_admin else ""
+
+    admin_view = ADMIN_VIEW if is_admin else ""
+
+    admin_js = ADMIN_JS if is_admin else ""
+
+
     return f"""
 <!DOCTYPE html>
 
@@ -2236,6 +3082,9 @@ def home():
             <span>Dashboard</span>
 
         </a>
+
+
+        {admin_nav}
 
 
         <a
@@ -2547,6 +3396,9 @@ def home():
         </div>
 
 
+        {admin_view}
+
+
         <!-- HARDWARE INFO -->
 
         <div
@@ -2620,6 +3472,8 @@ def home():
 {COMMON_JS}
 
 {DASHBOARD_JS}
+
+{admin_js}
 
 
 </body>
@@ -2699,6 +3553,43 @@ def account_logout():
 
 
     return jsonify({"status": "success"})
+
+
+@app.route("/api/admin/<action>", methods=["POST"])
+def admin_action(action):
+
+    # Forwards admin requests to the license server, which checks
+    # that this session really belongs to an admin.
+    if action not in ADMIN_ACTIONS:
+        return jsonify({"error": "Unknown admin action."}), 404
+
+    if not (logged_in() and license_state["is_admin"]):
+        return jsonify({"error": "Admin access required."}), 403
+
+
+    data = request.get_json(silent=True) or {}
+
+    result, err, status = license_request(
+        "/api/admin/" + action, {**data, "token": license_state["token"]}
+    )
+
+    if result is None:
+        return jsonify({"error": err}), status or 502
+
+
+    # If the admin changed their own time, refresh the local
+    # license right away instead of waiting for the next sync.
+    if str(data.get("username", "")).lower() == (license_state["username"] or "").lower():
+
+        own, _, _ = license_request(
+            "/api/status", {"token": license_state["token"]}
+        )
+
+        if own:
+            apply_license(own)
+
+
+    return jsonify(result)
 
 
 @app.route("/api/redeem", methods=["POST"])
