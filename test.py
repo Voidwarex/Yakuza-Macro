@@ -8,7 +8,7 @@ import urllib.request
 import os
 
 from flask import Flask, request, jsonify
-from pynput import keyboard, mouse
+from pynput import keyboard
 
 
 # =========================================================
@@ -28,9 +28,7 @@ config = {
 
 
 controller = keyboard.Controller()
-mouse_controller = mouse.Controller()
 is_pressed = False
-auto_build_held = False
 
 
 # =========================================================
@@ -2109,13 +2107,29 @@ def run_server():
 
 def auto_build_loop():
 
-    # Left-click repeatedly while the auto build
-    # keybind is held and the feature is enabled.
-    while auto_build_held and config["auto_build_active"]:
+    # While auto build is enabled, press the
+    # keybind every auto_build_delay_ms.
+    while True:
 
-        mouse_controller.click(
-            mouse.Button.left
-        )
+        if not config["auto_build_active"]:
+
+            time.sleep(0.05)
+
+            continue
+
+
+        key = config["auto_build_key"]
+
+        try:
+
+            controller.press(key)
+
+            controller.release(key)
+
+        except Exception:
+
+            pass
+
 
         time.sleep(
             config["auto_build_delay_ms"] / 1000.0
@@ -2124,7 +2138,11 @@ def auto_build_loop():
 
 def on_press(key):
 
-    global is_pressed, auto_build_held
+    global is_pressed
+
+
+    if not config["active"]:
+        return
 
 
     char = getattr(key, "char", None)
@@ -2133,25 +2151,7 @@ def on_press(key):
         return
 
 
-    if (
-        config["auto_build_active"]
-        and char == config["auto_build_key"]
-        and not auto_build_held
-    ):
-
-        auto_build_held = True
-
-        threading.Thread(
-            target=auto_build_loop,
-            daemon=True
-        ).start()
-
-
-    if (
-        config["active"]
-        and char == config["trigger_key"]
-        and not is_pressed
-    ):
+    if char == config["trigger_key"] and not is_pressed:
 
         is_pressed = True
 
@@ -2172,18 +2172,13 @@ def on_press(key):
 
 def on_release(key):
 
-    global is_pressed, auto_build_held
+    global is_pressed
 
 
     char = getattr(key, "char", None)
 
     if char is None:
         return
-
-
-    if char == config["auto_build_key"]:
-
-        auto_build_held = False
 
 
     if char == config["trigger_key"] and is_pressed:
@@ -2213,6 +2208,12 @@ if __name__ == "__main__":
     )
 
     server_thread.start()
+
+
+    threading.Thread(
+        target=auto_build_loop,
+        daemon=True
+    ).start()
 
 
     time.sleep(1)
