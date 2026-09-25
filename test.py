@@ -8,7 +8,7 @@ import urllib.request
 import os
 
 from flask import Flask, request, jsonify
-from pynput import keyboard
+from pynput import keyboard, mouse
 
 
 # =========================================================
@@ -20,11 +20,17 @@ config = {
     "trigger_key": "e",
     "target_key": "p",
     "active": True,
+
+    "auto_build_active": False,
+    "auto_build_key": "f",
+    "auto_build_delay_ms": 10,
 }
 
 
 controller = keyboard.Controller()
+mouse_controller = mouse.Controller()
 is_pressed = False
+auto_build_held = False
 
 
 # =========================================================
@@ -560,13 +566,13 @@ COMMON_CSS = """
        HEADER STATUS
        ===================================================== */
 
-    .header-status {
+    .card-toggle {
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
 
-        margin-left: 6px;
-        padding: 0 14px;
+        flex-shrink: 0;
+        padding: 0 10px;
 
         height: 36px;
 
@@ -576,8 +582,14 @@ COMMON_CSS = """
     }
 
 
-    .header-status .switch {
+    .card-toggle .switch {
         flex-shrink: 0;
+    }
+
+
+    .card-toggle .status-text {
+        font-size: 0.66rem;
+        letter-spacing: 0.12em;
     }
 
 
@@ -799,7 +811,7 @@ COMMON_CSS = """
 
         padding: 34px;
 
-        max-width: 440px;
+        max-width: 460px;
         width: 100%;
 
         border: 1px solid var(--panel-border);
@@ -889,6 +901,30 @@ COMMON_CSS = """
         display: flex;
         align-items: center;
         gap: 10px;
+    }
+
+
+    .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+
+        margin: 0 0 20px 0;
+        padding-bottom: 16px;
+
+        border-bottom: 1px solid transparent;
+        border-image: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta) 60%, transparent) 1;
+    }
+
+
+    .card-header h2 {
+        margin: 0;
+        font-size: 0.9rem;
+        letter-spacing: 0.08em;
+        white-space: nowrap;
+        padding: 0;
+        border: none;
     }
 
 
@@ -1147,6 +1183,23 @@ COMMON_CSS = """
 
         </symbol>
 
+        <symbol
+            id="icon-build"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round">
+
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+
+        </symbol>
+
     </defs>
 </svg>
 """
@@ -1178,6 +1231,13 @@ def home():
     status_text = "Enabled" if config["active"] else "Disabled"
 
     status_class = "enabled" if config["active"] else "disabled"
+
+
+    ab_checked = "checked" if config["auto_build_active"] else ""
+
+    ab_status_text = "Enabled" if config["auto_build_active"] else "Disabled"
+
+    ab_status_class = "enabled" if config["auto_build_active"] else "disabled"
 
 
     return f"""
@@ -1237,6 +1297,20 @@ def home():
             </svg>
 
             <span>Dashboard</span>
+
+        </a>
+
+
+        <a
+            class="nav-item"
+            onclick="switchView('autobuild', this)"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-build"></use>
+            </svg>
+
+            <span>Auto Build</span>
 
         </a>
 
@@ -1308,36 +1382,6 @@ def home():
             </div>
 
 
-            <!-- STATUS ATTACHED TO HEADER -->
-
-            <div class="header-status">
-
-
-                <label class="switch">
-
-                    <input
-                        type="checkbox"
-                        id="macroToggle"
-                        {is_active_checked}
-                        onchange="toggleMacro(this)"
-                    >
-
-                    <span class="slider"></span>
-
-                </label>
-
-
-                <span
-                    class="status-text {status_class}"
-                    id="macroStatus"
-                >
-                    {status_text}
-                </span>
-
-
-            </div>
-
-
         </div>
 
     </header>
@@ -1360,9 +1404,39 @@ def home():
             <div class="card">
 
 
-                <h2>
-                    Hotkey Configuration
-                </h2>
+                <div class="card-header">
+
+                    <h2>
+                        Hotkey Configuration
+                    </h2>
+
+
+                    <div class="card-toggle">
+
+                        <label class="switch">
+
+                            <input
+                                type="checkbox"
+                                id="macroToggle"
+                                {is_active_checked}
+                                onchange="toggleFeature(this, 'macro', 'macroStatus')"
+                            >
+
+                            <span class="slider"></span>
+
+                        </label>
+
+
+                        <span
+                            class="status-text {status_class}"
+                            id="macroStatus"
+                        >
+                            {status_text}
+                        </span>
+
+                    </div>
+
+                </div>
 
 
                 <form
@@ -1417,6 +1491,102 @@ def home():
                         type="submit"
                         class="btn-primary"
                         id="saveBtn"
+                    >
+                        Save Settings
+                    </button>
+
+
+                </form>
+
+
+            </div>
+
+        </div>
+
+
+        <!-- AUTO BUILD -->
+
+        <div
+            id="view-autobuild"
+            class="view"
+        >
+
+            <div class="card">
+
+
+                <div class="card-header">
+
+                    <h2>
+                        Auto Build
+                    </h2>
+
+
+                    <div class="card-toggle">
+
+                        <label class="switch">
+
+                            <input
+                                type="checkbox"
+                                id="autoBuildToggle"
+                                {ab_checked}
+                                onchange="toggleFeature(this, 'auto_build', 'autoBuildStatus')"
+                            >
+
+                            <span class="slider"></span>
+
+                        </label>
+
+
+                        <span
+                            class="status-text {ab_status_class}"
+                            id="autoBuildStatus"
+                        >
+                            {ab_status_text}
+                        </span>
+
+                    </div>
+
+                </div>
+
+
+                <form
+                    id="autoBuildForm"
+                    onsubmit="saveAutoBuild(event)"
+                >
+
+
+                    <label>
+                        Keybind:
+                    </label>
+
+                    <input
+                        class="form-input"
+                        type="text"
+                        id="auto_build_key"
+                        value="{config['auto_build_key']}"
+                        maxlength="1"
+                        required
+                    >
+
+
+                    <label>
+                        Delay (ms):
+                    </label>
+
+                    <input
+                        class="form-input"
+                        type="number"
+                        id="auto_build_delay_ms"
+                        value="{config['auto_build_delay_ms']}"
+                        min="1"
+                        required
+                    >
+
+
+                    <button
+                        type="submit"
+                        class="btn-primary"
+                        id="autoBuildSaveBtn"
                     >
                         Save Settings
                     </button>
@@ -1548,13 +1718,13 @@ function switchView(viewName, element) {{
 
 
 // =========================================================
-// TOGGLE MACRO
+// TOGGLE FEATURE
 // =========================================================
 
-async function toggleMacro(checkbox) {{
+async function toggleFeature(checkbox, feature, statusId) {{
 
     const statusText =
-        document.getElementById("macroStatus");
+        document.getElementById(statusId);
 
 
     if (checkbox.checked) {{
@@ -1590,6 +1760,7 @@ async function toggleMacro(checkbox) {{
                 }},
 
                 body: JSON.stringify({{
+                    feature: feature,
                     active: checkbox.checked
                 }})
             }}
@@ -1600,7 +1771,7 @@ async function toggleMacro(checkbox) {{
     catch (error) {{
 
         console.error(
-            "Failed to update macro state:",
+            "Failed to update " + feature + " state:",
             error
         );
 
@@ -1613,34 +1784,7 @@ async function toggleMacro(checkbox) {{
 // SAVE SETTINGS
 // =========================================================
 
-async function saveSettings(event) {{
-
-    event.preventDefault();
-
-
-    const btn =
-        document.getElementById("saveBtn");
-
-
-    const data = {{
-
-        trigger_key:
-            document
-                .getElementById("trigger_key")
-                .value,
-
-        target_key:
-            document
-                .getElementById("target_key")
-                .value,
-
-        delay_ms:
-            document
-                .getElementById("delay_ms")
-                .value
-
-    }};
-
+async function postSettings(data, btn) {{
 
     try {{
 
@@ -1694,6 +1838,49 @@ async function saveSettings(event) {{
         );
 
     }}
+
+}}
+
+
+async function saveSettings(event) {{
+
+    event.preventDefault();
+
+
+    await postSettings(
+        {{
+            trigger_key:
+                document.getElementById("trigger_key").value,
+
+            target_key:
+                document.getElementById("target_key").value,
+
+            delay_ms:
+                document.getElementById("delay_ms").value
+        }},
+
+        document.getElementById("saveBtn")
+    );
+
+}}
+
+
+async function saveAutoBuild(event) {{
+
+    event.preventDefault();
+
+
+    await postSettings(
+        {{
+            auto_build_key:
+                document.getElementById("auto_build_key").value,
+
+            auto_build_delay_ms:
+                document.getElementById("auto_build_delay_ms").value
+        }},
+
+        document.getElementById("autoBuildSaveBtn")
+    );
 
 }}
 
@@ -1799,6 +1986,34 @@ def update_config():
         pass
 
 
+    config["auto_build_key"] = (
+        str(
+            data.get(
+                "auto_build_key",
+                config["auto_build_key"]
+            )
+        )
+        .lower()
+    )
+
+
+    try:
+
+        config["auto_build_delay_ms"] = max(
+            1.0,
+            float(
+                data.get(
+                    "auto_build_delay_ms",
+                    config["auto_build_delay_ms"]
+                )
+            )
+        )
+
+    except (ValueError, TypeError):
+
+        pass
+
+
     return jsonify({
         "status": "success"
     })
@@ -1813,9 +2028,24 @@ def toggle_macro():
 
     data = request.json
 
-    if data and "active" in data:
+    feature_keys = {
+        "macro": "active",
+        "auto_build": "auto_build_active",
+    }
 
-        config["active"] = bool(
+    key = feature_keys.get(
+        (data or {}).get("feature", "macro")
+    )
+
+    if key is None:
+        return jsonify({
+            "error": "Unknown feature"
+        }), 400
+
+
+    if "active" in data:
+
+        config[key] = bool(
             data["active"]
         )
 
@@ -1824,7 +2054,7 @@ def toggle_macro():
         "status": "success",
 
         "active":
-            config["active"]
+            config[key]
     })
 
 
@@ -1877,61 +2107,92 @@ def run_server():
 # KEYBOARD LISTENER
 # =========================================================
 
+def auto_build_loop():
+
+    # Left-click repeatedly while the auto build
+    # keybind is held and the feature is enabled.
+    while auto_build_held and config["auto_build_active"]:
+
+        mouse_controller.click(
+            mouse.Button.left
+        )
+
+        time.sleep(
+            config["auto_build_delay_ms"] / 1000.0
+        )
+
+
 def on_press(key):
 
-    global is_pressed
+    global is_pressed, auto_build_held
 
 
-    if not config["active"]:
+    char = getattr(key, "char", None)
+
+    if char is None:
         return
 
 
-    try:
+    if (
+        config["auto_build_active"]
+        and char == config["auto_build_key"]
+        and not auto_build_held
+    ):
 
-        if (
-            key.char == config["trigger_key"]
-            and not is_pressed
-        ):
+        auto_build_held = True
 
-            is_pressed = True
+        threading.Thread(
+            target=auto_build_loop,
+            daemon=True
+        ).start()
 
 
-            time.sleep(
-                config["delay_ms"] / 1000.0
+    if (
+        config["active"]
+        and char == config["trigger_key"]
+        and not is_pressed
+    ):
+
+        is_pressed = True
+
+
+        time.sleep(
+            config["delay_ms"] / 1000.0
+        )
+
+
+        # Make sure the macro wasn't
+        # disabled during the delay.
+        if config["active"]:
+
+            controller.press(
+                config["target_key"]
             )
-
-
-            # Make sure the macro wasn't
-            # disabled during the delay.
-            if config["active"]:
-
-                controller.press(
-                    config["target_key"]
-                )
-
-    except AttributeError:
-
-        pass
 
 
 def on_release(key):
 
-    global is_pressed
+    global is_pressed, auto_build_held
 
 
-    try:
+    char = getattr(key, "char", None)
 
-        if key.char == config["trigger_key"]:
+    if char is None:
+        return
 
-            is_pressed = False
 
-            controller.release(
-                config["target_key"]
-            )
+    if char == config["auto_build_key"]:
 
-    except AttributeError:
+        auto_build_held = False
 
-        pass
+
+    if char == config["trigger_key"] and is_pressed:
+
+        is_pressed = False
+
+        controller.release(
+            config["target_key"]
+        )
 
 
 # =========================================================
