@@ -12,8 +12,11 @@ pip install flask pynput
 ## 1. Run the license server (you host this)
 
 ```
+pip install waitress
 python license_server.py serve --host 0.0.0.0 --port 8000
 ```
+
+`serve` uses the `waitress` production server when it is installed.
 
 Accounts and keys are stored in `licenses.db` next to the script
 (override with `YAKUZA_DB_PATH`). Keep this file private and backed up.

@@ -365,7 +365,20 @@ def cmd_serve(args):
     print(f"License server listening on http://{args.host}:{args.port}")
     print(f"Database: {DB_PATH}")
 
-    app.run(host=args.host, port=args.port, debug=False)
+    try:
+
+        from waitress import serve
+
+    except ImportError:
+
+        print("waitress not installed; using Flask's development server.")
+
+        app.run(host=args.host, port=args.port, debug=False)
+
+        return
+
+
+    serve(app, host=args.host, port=args.port)
 
 
 def cmd_genkeys(args):
