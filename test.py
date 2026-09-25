@@ -5,6 +5,8 @@ import platform
 import subprocess
 import uuid
 import urllib.request
+import urllib.error
+import json
 import os
 
 from flask import Flask, request, jsonify
@@ -29,6 +31,32 @@ config = {
 
 controller = keyboard.Controller()
 is_pressed = False
+
+
+# =========================================================
+# LICENSE
+# =========================================================
+
+# Address of license_server.py. Point this at your hosted server
+# (use https:// in production) or set YAKUZA_LICENSE_SERVER.
+LICENSE_SERVER = os.environ.get(
+    "YAKUZA_LICENSE_SERVER",
+    "http://127.0.0.1:8000"
+).rstrip("/")
+
+LICENSE_SYNC_SECONDS = 60
+
+
+# remaining is counted down from synced_at with a monotonic
+# clock, so changing the PC clock can't add time.
+license_state = {
+    "token": None,
+    "username": None,
+    "remaining": 0.0,
+    "synced_at": 0.0,
+}
+
+license_lock = threading.Lock()
 
 
 # =========================================================
@@ -84,6 +112,129 @@ def get_hwid():
         pass
 
     return str(uuid.getnode())
+
+
+_hwid_cache = None
+
+
+def cached_hwid():
+
+    global _hwid_cache
+
+    if _hwid_cache is None:
+        _hwid_cache = get_hwid()
+
+    return _hwid_cache
+
+
+# =========================================================
+# LICENSE CLIENT
+# =========================================================
+
+def license_request(path, payload):
+
+    # Returns (response_json, error_message, http_status).
+    body = json.dumps(
+        {**payload, "hwid": cached_hwid()}
+    ).encode("utf8")
+
+    req = urllib.request.Request(
+        LICENSE_SERVER + path,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    try:
+
+        with urllib.request.urlopen(req, timeout=6) as res:
+            return json.loads(res.read().decode("utf8")), None, res.status
+
+    except urllib.error.HTTPError as e:
+
+        try:
+            message = json.loads(e.read().decode("utf8")).get("error")
+        except Exception:
+            message = None
+
+        return None, message or f"License server error ({e.code}).", e.code
+
+    except Exception:
+
+        return None, "Can't reach the license server. Check your connection.", 0
+
+
+def apply_license(data, token=None):
+
+    with license_lock:
+
+        if token is not None:
+            license_state["token"] = token
+
+        license_state["username"] = data.get(
+            "username", license_state["username"]
+        )
+
+        license_state["remaining"] = float(
+            data.get("remaining_seconds", 0)
+        )
+
+        license_state["synced_at"] = time.monotonic()
+
+
+def clear_license():
+
+    with license_lock:
+
+        license_state["token"] = None
+        license_state["username"] = None
+        license_state["remaining"] = 0.0
+
+
+def logged_in():
+
+    return license_state["token"] is not None
+
+
+def remaining_seconds():
+
+    with license_lock:
+
+        if license_state["token"] is None:
+            return 0.0
+
+        elapsed = time.monotonic() - license_state["synced_at"]
+
+        return max(0.0, license_state["remaining"] - elapsed)
+
+
+def license_active():
+
+    return remaining_seconds() > 0
+
+
+def license_sync_loop():
+
+    # Re-check the license with the server so redeemed or
+    # revoked time shows up without restarting.
+    while True:
+
+        time.sleep(LICENSE_SYNC_SECONDS)
+
+        token = license_state["token"]
+
+        if token is None:
+            continue
+
+        data, err, status = license_request(
+            "/api/status", {"token": token}
+        )
+
+        if data:
+            apply_license(data)
+
+        elif status in (401, 403):
+            clear_license()
 
 
 # =========================================================
@@ -1029,6 +1180,228 @@ COMMON_CSS = """
     }
 
 
+    /* =====================================================
+       DASHBOARD GRID
+       ===================================================== */
+
+    .view.active {
+        margin: auto 0;
+    }
+
+
+    .dashboard-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+
+        width: 100%;
+        max-width: 960px;
+    }
+
+
+    .dashboard-grid .card {
+        max-width: none;
+    }
+
+
+    .dashboard-grid .license-card {
+        grid-column: 1 / -1;
+    }
+
+
+    @media (max-width: 1100px) {
+        .dashboard-grid {
+            grid-template-columns: minmax(0, 1fr);
+            max-width: 460px;
+        }
+    }
+
+
+    /* =====================================================
+       LICENSE CARD
+       ===================================================== */
+
+    .license-user {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+
+    .license-row {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+    }
+
+
+    .license-label {
+        font-weight: 600;
+        font-size: 0.78rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+    }
+
+
+    .license-time {
+        margin-top: 6px;
+
+        font-family: var(--font-display);
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+
+        color: var(--bolt-bright);
+        text-shadow: 0 0 18px rgba(92, 200, 255, 0.45);
+    }
+
+
+    .license-time.expired {
+        color: var(--off);
+        text-shadow: 0 0 14px rgba(255, 77, 98, 0.4);
+    }
+
+
+    .redeem-form {
+        display: flex;
+        gap: 10px;
+
+        flex: 1;
+        min-width: 280px;
+        max-width: 480px;
+    }
+
+
+    .redeem-form input.form-input {
+        margin-top: 0;
+        text-transform: uppercase;
+    }
+
+
+    .redeem-form button.btn-primary {
+        margin-top: 0;
+        width: auto;
+        padding: 0 22px;
+        flex-shrink: 0;
+    }
+
+
+    .form-msg {
+        min-height: 1.2em;
+        margin-top: 12px;
+
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+
+    .form-msg.ok {
+        color: var(--on);
+    }
+
+
+    .form-msg.err {
+        color: var(--off);
+    }
+
+
+    /* =====================================================
+       LOCKED STATE
+       ===================================================== */
+
+    .card.locked form,
+    .card.locked .card-toggle {
+        opacity: 0.3;
+        filter: grayscale(1);
+        pointer-events: none;
+    }
+
+
+    .card.locked::after {
+        content: "LOCKED \\2014  REDEEM A KEY";
+
+        position: absolute;
+        inset: 0;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        background: rgba(6, 8, 13, 0.45);
+
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 0.9rem;
+        letter-spacing: 0.18em;
+
+        color: var(--off);
+        text-shadow: 0 0 12px rgba(255, 77, 98, 0.5);
+    }
+
+
+    /* =====================================================
+       LOGIN
+       ===================================================== */
+
+    .auth-card {
+        max-width: 420px;
+    }
+
+
+    .auth-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+
+        padding: 4px;
+        margin-bottom: 8px;
+
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+    }
+
+
+    .auth-tab {
+        padding: 10px;
+
+        background: none;
+        border: none;
+        border-radius: 8px;
+
+        color: var(--text-muted);
+
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 0.8rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+
+    .auth-tab.active {
+        background: rgba(92, 200, 255, 0.14);
+        color: var(--bolt-bright);
+    }
+
+
+    .auth-hwid {
+        margin-top: 18px;
+
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        color: var(--text-muted);
+
+        word-break: break-all;
+    }
+
+
     @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -1129,23 +1502,6 @@ COMMON_CSS = """
 
         </symbol>
 
-        <symbol
-            id="icon-build"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round">
-
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-
-            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-
-        </symbol>
-
     </defs>
 </svg>
 """
@@ -1158,8 +1514,657 @@ COMMON_CSS = """
 app = Flask(__name__)
 
 
+def html_escape(value):
+
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+# =========================================================
+# SHARED JS
+# =========================================================
+
+COMMON_JS = """
+<script>
+
+async function postJSON(url, data) {
+
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data || {})
+    });
+
+    let body = {};
+
+    try { body = await res.json(); } catch (e) {}
+
+    return { ok: res.ok, body: body };
+
+}
+
+
+function showMsg(el, text, ok) {
+
+    el.innerText = text;
+
+    el.classList.remove("ok", "err");
+
+    el.classList.add(ok ? "ok" : "err");
+
+}
+
+</script>
+"""
+
+
+# =========================================================
+# LOGIN PAGE
+# =========================================================
+
+LOGIN_PAGE = """
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Yakuza Solutions</title>
+
+    __COMMON_CSS__
+
+</head>
+
+
+<body>
+
+
+<main class="main-wrapper">
+
+
+    <header class="topbar">
+
+        <div class="topbar-left">
+
+            <div class="brand-title">
+                Yakuza Solutions
+            </div>
+
+        </div>
+
+    </header>
+
+
+    <div class="view-container">
+
+        <div class="view active">
+
+            <div class="card auth-card">
+
+
+                <h2 id="authTitle">
+                    Sign In
+                </h2>
+
+
+                <div class="auth-tabs">
+
+                    <button class="auth-tab active" id="tabLogin" onclick="setMode('login')">
+                        Login
+                    </button>
+
+                    <button class="auth-tab" id="tabRegister" onclick="setMode('register')">
+                        Register
+                    </button>
+
+                </div>
+
+
+                <form id="authForm" onsubmit="submitAuth(event)">
+
+
+                    <label>
+                        Username:
+                    </label>
+
+                    <input
+                        class="form-input"
+                        type="text"
+                        id="username"
+                        autocomplete="username"
+                        maxlength="24"
+                        required
+                    >
+
+
+                    <label>
+                        Password:
+                    </label>
+
+                    <input
+                        class="form-input"
+                        type="password"
+                        id="password"
+                        autocomplete="current-password"
+                        required
+                    >
+
+
+                    <button
+                        type="submit"
+                        class="btn-primary"
+                        id="authBtn"
+                    >
+                        Login
+                    </button>
+
+
+                </form>
+
+
+                <div class="form-msg" id="authMsg"></div>
+
+
+                <div class="auth-hwid">
+                    HWID: __HWID__
+                </div>
+
+
+            </div>
+
+        </div>
+
+    </div>
+
+</main>
+
+
+__COMMON_JS__
+
+
+<script>
+
+let mode = "login";
+
+
+function setMode(next) {
+
+    mode = next;
+
+    const isLogin = mode === "login";
+
+    document.getElementById("tabLogin").classList.toggle("active", isLogin);
+    document.getElementById("tabRegister").classList.toggle("active", !isLogin);
+
+    document.getElementById("authTitle").innerText = isLogin ? "Sign In" : "Create Account";
+    document.getElementById("authBtn").innerText = isLogin ? "Login" : "Register";
+
+    document.getElementById("password").autocomplete =
+        isLogin ? "current-password" : "new-password";
+
+    document.getElementById("authMsg").innerText = "";
+
+}
+
+
+async function submitAuth(event) {
+
+    event.preventDefault();
+
+    const btn = document.getElementById("authBtn");
+    const msg = document.getElementById("authMsg");
+
+    btn.disabled = true;
+
+    try {
+
+        const res = await postJSON("/api/" + mode, {
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value
+        });
+
+        if (res.ok) {
+            window.location.reload();
+            return;
+        }
+
+        showMsg(msg, res.body.error || "Something went wrong.", false);
+
+    }
+
+    catch (error) {
+
+        showMsg(msg, "Couldn't reach the app.", false);
+
+    }
+
+    btn.disabled = false;
+
+}
+
+</script>
+
+
+</body>
+
+</html>
+"""
+
+
+# =========================================================
+# DASHBOARD JS
+# =========================================================
+
+DASHBOARD_JS = """
+<script>
+
+
+// =========================================================
+// SIDEBAR
+// =========================================================
+
+function toggleSidebar() {
+
+    document
+        .getElementById("sidebar")
+        .classList
+        .toggle("collapsed");
+
+}
+
+
+// =========================================================
+// VIEW SWITCHING
+// =========================================================
+
+function switchView(viewName, element) {
+
+    document
+        .querySelectorAll(".nav-item")
+        .forEach(el => {
+            el.classList.remove("active");
+        });
+
+
+    element.classList.add("active");
+
+
+    document
+        .querySelectorAll(".view")
+        .forEach(el => {
+            el.classList.remove("active");
+        });
+
+
+    document
+        .getElementById("view-" + viewName)
+        .classList.add("active");
+
+}
+
+
+// =========================================================
+// LICENSE COUNTDOWN
+// =========================================================
+
+let remaining = Number(
+    document.getElementById("licenseTime").dataset.remaining
+);
+
+let lastTick = performance.now();
+
+
+function formatRemaining(seconds) {
+
+    seconds = Math.floor(seconds);
+
+    if (seconds <= 0) {
+        return "Expired";
+    }
+
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+
+    const pad = n => String(n).padStart(2, "0");
+
+    return (d > 0 ? d + "d " : "") + pad(h) + "h " + pad(m) + "m " + pad(s) + "s";
+
+}
+
+
+function renderLicense() {
+
+    const el = document.getElementById("licenseTime");
+
+    const locked = remaining <= 0;
+
+    el.innerText = formatRemaining(remaining);
+
+    el.classList.toggle("expired", locked);
+
+    document
+        .querySelectorAll(".card.lockable")
+        .forEach(card => card.classList.toggle("locked", locked));
+
+}
+
+
+setInterval(() => {
+
+    const t = performance.now();
+
+    remaining = Math.max(0, remaining - (t - lastTick) / 1000);
+
+    lastTick = t;
+
+    renderLicense();
+
+}, 250);
+
+
+async function syncLicense() {
+
+    try {
+
+        const res = await postJSON("/api/license");
+
+        if (res.body.logged_in === false) {
+            window.location.reload();
+            return;
+        }
+
+        if (res.ok) {
+            remaining = res.body.remaining_seconds;
+            lastTick = performance.now();
+            renderLicense();
+        }
+
+    }
+
+    catch (error) {}
+
+}
+
+
+setInterval(syncLicense, 30000);
+
+renderLicense();
+
+
+// =========================================================
+// REDEEM KEY
+// =========================================================
+
+async function redeemKey(event) {
+
+    event.preventDefault();
+
+    const input = document.getElementById("license_key");
+    const btn = document.getElementById("redeemBtn");
+    const msg = document.getElementById("redeemMsg");
+
+    btn.disabled = true;
+
+    try {
+
+        const res = await postJSON("/api/redeem", { key: input.value });
+
+        if (res.ok) {
+
+            remaining = res.body.remaining_seconds;
+            lastTick = performance.now();
+            renderLicense();
+
+            input.value = "";
+
+            showMsg(msg, "Key redeemed: +" + res.body.added_days + " day(s) added.", true);
+
+        }
+
+        else {
+
+            showMsg(msg, res.body.error || "Couldn't redeem that key.", false);
+
+        }
+
+    }
+
+    catch (error) {
+
+        showMsg(msg, "Couldn't reach the app.", false);
+
+    }
+
+    btn.disabled = false;
+
+}
+
+
+// =========================================================
+// TOGGLE FEATURE
+// =========================================================
+
+function setStatus(statusText, on) {
+
+    statusText.innerText = on ? "Enabled" : "Disabled";
+
+    statusText.classList.toggle("enabled", on);
+
+    statusText.classList.toggle("disabled", !on);
+
+}
+
+
+async function toggleFeature(checkbox, feature, statusId) {
+
+    const statusText = document.getElementById(statusId);
+
+    setStatus(statusText, checkbox.checked);
+
+
+    try {
+
+        const res = await postJSON("/api/toggle", {
+            feature: feature,
+            active: checkbox.checked
+        });
+
+        if (!res.ok) {
+            checkbox.checked = !checkbox.checked;
+            setStatus(statusText, checkbox.checked);
+        }
+
+    }
+
+    catch (error) {
+
+        console.error("Failed to update " + feature + " state:", error);
+
+    }
+
+}
+
+
+// =========================================================
+// SAVE SETTINGS
+// =========================================================
+
+async function postSettings(data, btn) {
+
+    try {
+
+        const res = await postJSON("/api/update", data);
+
+
+        if (res.ok) {
+
+            const originalText = btn.innerText;
+
+            btn.innerText = "Settings Saved!";
+
+            btn.style.background = "#1f9d6b";
+
+
+            setTimeout(() => {
+
+                btn.innerText = originalText;
+
+                btn.style.background = "";
+
+            }, 2000);
+
+        }
+
+    }
+
+    catch (error) {
+
+        console.error("Failed to save settings:", error);
+
+    }
+
+}
+
+
+async function saveSettings(event) {
+
+    event.preventDefault();
+
+    await postSettings(
+        {
+            trigger_key: document.getElementById("trigger_key").value,
+            target_key: document.getElementById("target_key").value,
+            delay_ms: document.getElementById("delay_ms").value
+        },
+        document.getElementById("saveBtn")
+    );
+
+}
+
+
+async function saveAutoBuild(event) {
+
+    event.preventDefault();
+
+    await postSettings(
+        {
+            auto_build_key: document.getElementById("auto_build_key").value,
+            auto_build_delay_ms: document.getElementById("auto_build_delay_ms").value
+        },
+        document.getElementById("autoBuildSaveBtn")
+    );
+
+}
+
+
+// =========================================================
+// LOGOUT
+// =========================================================
+
+async function logout() {
+
+    document.body.innerHTML = `
+
+        <div
+            style="
+                display:flex;
+                height:100vh;
+                width:100vw;
+                justify-content:center;
+                align-items:center;
+                background:#06080d;
+                color:#cfeeff;
+                font-family:Oxanium, sans-serif;
+                letter-spacing:0.1em;
+                text-shadow:0 0 10px rgba(92,200,255,0.6);
+                font-size:1.5rem;
+                font-weight:bold;
+            "
+        >
+            Application Closed.
+            You can close this window.
+        </div>
+
+    `;
+
+
+    await fetch("/api/shutdown", { method: "POST" });
+
+}
+
+
+</script>
+"""
+
+
+# =========================================================
+# PAGES
+# =========================================================
+
+def render_login():
+
+    return (
+        LOGIN_PAGE
+        .replace("__COMMON_CSS__", COMMON_CSS)
+        .replace("__COMMON_JS__", COMMON_JS)
+        .replace("__HWID__", html_escape(cached_hwid()))
+    )
+
+
+def toggle_html(input_id, status_id, feature, active):
+
+    checked = "checked" if active else ""
+
+    status_text = "Enabled" if active else "Disabled"
+
+    status_class = "enabled" if active else "disabled"
+
+
+    return f"""
+                    <div class="card-toggle">
+
+                        <label class="switch">
+
+                            <input
+                                type="checkbox"
+                                id="{input_id}"
+                                {checked}
+                                onchange="toggleFeature(this, '{feature}', '{status_id}')"
+                            >
+
+                            <span class="slider"></span>
+
+                        </label>
+
+
+                        <span
+                            class="status-text {status_class}"
+                            id="{status_id}"
+                        >
+                            {status_text}
+                        </span>
+
+                    </div>
+    """
+
+
 @app.route("/")
 def home():
+
+    if not logged_in():
+        return render_login()
+
 
     sys_os = f"{platform.system()} {platform.release()}"
 
@@ -1169,21 +2174,23 @@ def home():
 
     public_ip = get_public_ip()
 
-    hwid = get_hwid()
+    hwid = cached_hwid()
 
 
-    is_active_checked = "checked" if config["active"] else ""
+    macro_toggle = toggle_html(
+        "macroToggle", "macroStatus", "macro", config["active"]
+    )
 
-    status_text = "Enabled" if config["active"] else "Disabled"
+    auto_build_toggle = toggle_html(
+        "autoBuildToggle", "autoBuildStatus", "auto_build", config["auto_build_active"]
+    )
 
-    status_class = "enabled" if config["active"] else "disabled"
 
+    username = html_escape(license_state["username"] or "")
 
-    ab_checked = "checked" if config["auto_build_active"] else ""
+    remaining = int(remaining_seconds())
 
-    ab_status_text = "Enabled" if config["auto_build_active"] else "Disabled"
-
-    ab_status_class = "enabled" if config["auto_build_active"] else "disabled"
+    locked = "" if remaining > 0 else "locked"
 
 
     return f"""
@@ -1243,20 +2250,6 @@ def home():
             </svg>
 
             <span>Dashboard</span>
-
-        </a>
-
-
-        <a
-            class="nav-item"
-            onclick="switchView('autobuild', this)"
-        >
-
-            <svg width="20" height="20">
-                <use href="#icon-build"></use>
-            </svg>
-
-            <span>Auto Build</span>
 
         </a>
 
@@ -1347,198 +2340,222 @@ def home():
             class="view active"
         >
 
-            <div class="card">
+            <div class="dashboard-grid">
 
 
-                <div class="card-header">
+                <!-- LICENSE -->
 
-                    <h2>
-                        Hotkey Configuration
-                    </h2>
+                <div class="card license-card">
 
 
-                    <div class="card-toggle">
+                    <div class="card-header">
 
-                        <label class="switch">
+                        <h2>
+                            License
+                        </h2>
 
-                            <input
-                                type="checkbox"
-                                id="macroToggle"
-                                {is_active_checked}
-                                onchange="toggleFeature(this, 'macro', 'macroStatus')"
-                            >
-
-                            <span class="slider"></span>
-
-                        </label>
-
-
-                        <span
-                            class="status-text {status_class}"
-                            id="macroStatus"
-                        >
-                            {status_text}
+                        <span class="license-user">
+                            {username}
                         </span>
 
                     </div>
 
-                </div>
+
+                    <div class="license-row">
 
 
-                <form
-                    id="configForm"
-                    onsubmit="saveSettings(event)"
-                >
+                        <div>
+
+                            <div class="license-label">
+                                Time Remaining
+                            </div>
+
+                            <div
+                                class="license-time"
+                                id="licenseTime"
+                                data-remaining="{remaining}"
+                            >
+                                --
+                            </div>
+
+                        </div>
 
 
-                    <label>
-                        Trigger Key:
-                    </label>
-
-                    <input
-                        class="form-input"
-                        type="text"
-                        id="trigger_key"
-                        value="{config['trigger_key']}"
-                        maxlength="1"
-                        required
-                    >
-
-
-                    <label>
-                        Target Key:
-                    </label>
-
-                    <input
-                        class="form-input"
-                        type="text"
-                        id="target_key"
-                        value="{config['target_key']}"
-                        maxlength="1"
-                        required
-                    >
-
-
-                    <label>
-                        Delay (ms):
-                    </label>
-
-                    <input
-                        class="form-input"
-                        type="number"
-                        id="delay_ms"
-                        value="{config['delay_ms']}"
-                        min="0"
-                        required
-                    >
-
-
-                    <button
-                        type="submit"
-                        class="btn-primary"
-                        id="saveBtn"
-                    >
-                        Save Settings
-                    </button>
-
-
-                </form>
-
-
-            </div>
-
-        </div>
-
-
-        <!-- AUTO BUILD -->
-
-        <div
-            id="view-autobuild"
-            class="view"
-        >
-
-            <div class="card">
-
-
-                <div class="card-header">
-
-                    <h2>
-                        Auto Build
-                    </h2>
-
-
-                    <div class="card-toggle">
-
-                        <label class="switch">
+                        <form
+                            class="redeem-form"
+                            onsubmit="redeemKey(event)"
+                        >
 
                             <input
-                                type="checkbox"
-                                id="autoBuildToggle"
-                                {ab_checked}
-                                onchange="toggleFeature(this, 'auto_build', 'autoBuildStatus')"
+                                class="form-input"
+                                type="text"
+                                id="license_key"
+                                placeholder="Enter day / week / month key"
+                                required
                             >
 
-                            <span class="slider"></span>
+                            <button
+                                type="submit"
+                                class="btn-primary"
+                                id="redeemBtn"
+                            >
+                                Redeem
+                            </button>
 
-                        </label>
+                        </form>
 
-
-                        <span
-                            class="status-text {ab_status_class}"
-                            id="autoBuildStatus"
-                        >
-                            {ab_status_text}
-                        </span>
 
                     </div>
 
+
+                    <div class="form-msg" id="redeemMsg"></div>
+
+
                 </div>
 
 
-                <form
-                    id="autoBuildForm"
-                    onsubmit="saveAutoBuild(event)"
-                >
+                <!-- HOTKEY -->
+
+                <div class="card lockable {locked}">
 
 
-                    <label>
-                        Keybind:
-                    </label>
+                    <div class="card-header">
 
-                    <input
-                        class="form-input"
-                        type="text"
-                        id="auto_build_key"
-                        value="{config['auto_build_key']}"
-                        maxlength="1"
-                        required
+                        <h2>
+                            Hotkey Configuration
+                        </h2>
+
+                        {macro_toggle}
+
+                    </div>
+
+
+                    <form
+                        id="configForm"
+                        onsubmit="saveSettings(event)"
                     >
 
 
-                    <label>
-                        Delay (ms):
-                    </label>
+                        <label>
+                            Trigger Key:
+                        </label>
 
-                    <input
-                        class="form-input"
-                        type="number"
-                        id="auto_build_delay_ms"
-                        value="{config['auto_build_delay_ms']}"
-                        min="1"
-                        required
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="trigger_key"
+                            value="{html_escape(config['trigger_key'])}"
+                            maxlength="1"
+                            required
+                        >
+
+
+                        <label>
+                            Target Key:
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="target_key"
+                            value="{html_escape(config['target_key'])}"
+                            maxlength="1"
+                            required
+                        >
+
+
+                        <label>
+                            Delay (ms):
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="delay_ms"
+                            value="{config['delay_ms']}"
+                            min="0"
+                            required
+                        >
+
+
+                        <button
+                            type="submit"
+                            class="btn-primary"
+                            id="saveBtn"
+                        >
+                            Save Settings
+                        </button>
+
+
+                    </form>
+
+
+                </div>
+
+
+                <!-- AUTO BUILD -->
+
+                <div class="card lockable {locked}">
+
+
+                    <div class="card-header">
+
+                        <h2>
+                            Auto Build
+                        </h2>
+
+                        {auto_build_toggle}
+
+                    </div>
+
+
+                    <form
+                        id="autoBuildForm"
+                        onsubmit="saveAutoBuild(event)"
                     >
 
 
-                    <button
-                        type="submit"
-                        class="btn-primary"
-                        id="autoBuildSaveBtn"
-                    >
-                        Save Settings
-                    </button>
+                        <label>
+                            Keybind:
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="auto_build_key"
+                            value="{html_escape(config['auto_build_key'])}"
+                            maxlength="1"
+                            required
+                        >
 
 
-                </form>
+                        <label>
+                            Delay (ms):
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="auto_build_delay_ms"
+                            value="{config['auto_build_delay_ms']}"
+                            min="1"
+                            required
+                        >
+
+
+                        <button
+                            type="submit"
+                            class="btn-primary"
+                            id="autoBuildSaveBtn"
+                        >
+                            Save Settings
+                        </button>
+
+
+                    </form>
+
+
+                </div>
 
 
             </div>
@@ -1566,7 +2583,7 @@ def home():
                 </label>
 
                 <div class="info-box">
-                    {public_ip}
+                    {html_escape(public_ip)}
                 </div>
 
 
@@ -1575,7 +2592,7 @@ def home():
                 </label>
 
                 <div class="info-box">
-                    {hwid}
+                    {html_escape(hwid)}
                 </div>
 
 
@@ -1584,7 +2601,7 @@ def home():
                 </label>
 
                 <div class="info-box">
-                    {sys_os}
+                    {html_escape(sys_os)}
                 </div>
 
 
@@ -1593,7 +2610,7 @@ def home():
                 </label>
 
                 <div class="info-box">
-                    {sys_node}
+                    {html_escape(sys_node)}
                 </div>
 
 
@@ -1602,7 +2619,7 @@ def home():
                 </label>
 
                 <div class="info-box">
-                    {sys_processor}
+                    {html_escape(sys_processor)}
                 </div>
 
 
@@ -1616,263 +2633,9 @@ def home():
 </main>
 
 
-<script>
+{COMMON_JS}
 
-
-// =========================================================
-// SIDEBAR
-// =========================================================
-
-function toggleSidebar() {{
-
-    document
-        .getElementById("sidebar")
-        .classList
-        .toggle("collapsed");
-
-}}
-
-
-// =========================================================
-// VIEW SWITCHING
-// =========================================================
-
-function switchView(viewName, element) {{
-
-    document
-        .querySelectorAll(".nav-item")
-        .forEach(el => {{
-            el.classList.remove("active");
-        }});
-
-
-    element.classList.add("active");
-
-
-    document
-        .querySelectorAll(".view")
-        .forEach(el => {{
-            el.classList.remove("active");
-        }});
-
-
-    document
-        .getElementById("view-" + viewName)
-        .classList.add("active");
-
-}}
-
-
-// =========================================================
-// TOGGLE FEATURE
-// =========================================================
-
-async function toggleFeature(checkbox, feature, statusId) {{
-
-    const statusText =
-        document.getElementById(statusId);
-
-
-    if (checkbox.checked) {{
-
-        statusText.innerText = "Enabled";
-
-        statusText.classList.remove("disabled");
-
-        statusText.classList.add("enabled");
-
-    }}
-
-    else {{
-
-        statusText.innerText = "Disabled";
-
-        statusText.classList.remove("enabled");
-
-        statusText.classList.add("disabled");
-
-    }}
-
-
-    try {{
-
-        await fetch(
-            "/api/toggle",
-            {{
-                method: "POST",
-
-                headers: {{
-                    "Content-Type": "application/json"
-                }},
-
-                body: JSON.stringify({{
-                    feature: feature,
-                    active: checkbox.checked
-                }})
-            }}
-        );
-
-    }}
-
-    catch (error) {{
-
-        console.error(
-            "Failed to update " + feature + " state:",
-            error
-        );
-
-    }}
-
-}}
-
-
-// =========================================================
-// SAVE SETTINGS
-// =========================================================
-
-async function postSettings(data, btn) {{
-
-    try {{
-
-        const res = await fetch(
-            "/api/update",
-            {{
-                method: "POST",
-
-                headers: {{
-                    "Content-Type": "application/json"
-                }},
-
-                body: JSON.stringify(data)
-            }}
-        );
-
-
-        if (res.ok) {{
-
-            const originalText =
-                btn.innerText;
-
-
-            btn.innerText =
-                "Settings Saved!";
-
-
-            btn.style.background =
-                "#1f9d6b";
-
-
-            setTimeout(() => {{
-
-                btn.innerText =
-                    originalText;
-
-                btn.style.background =
-                    "";
-
-            }}, 2000);
-
-        }}
-
-    }}
-
-    catch (error) {{
-
-        console.error(
-            "Failed to save settings:",
-            error
-        );
-
-    }}
-
-}}
-
-
-async function saveSettings(event) {{
-
-    event.preventDefault();
-
-
-    await postSettings(
-        {{
-            trigger_key:
-                document.getElementById("trigger_key").value,
-
-            target_key:
-                document.getElementById("target_key").value,
-
-            delay_ms:
-                document.getElementById("delay_ms").value
-        }},
-
-        document.getElementById("saveBtn")
-    );
-
-}}
-
-
-async function saveAutoBuild(event) {{
-
-    event.preventDefault();
-
-
-    await postSettings(
-        {{
-            auto_build_key:
-                document.getElementById("auto_build_key").value,
-
-            auto_build_delay_ms:
-                document.getElementById("auto_build_delay_ms").value
-        }},
-
-        document.getElementById("autoBuildSaveBtn")
-    );
-
-}}
-
-
-// =========================================================
-// LOGOUT
-// =========================================================
-
-async function logout() {{
-
-    document.body.innerHTML = `
-
-        <div
-            style="
-                display:flex;
-                height:100vh;
-                width:100vw;
-                justify-content:center;
-                align-items:center;
-                background:#06080d;
-                color:#cfeeff;
-                font-family:Oxanium, sans-serif;
-                letter-spacing:0.1em;
-                text-shadow:0 0 10px rgba(92,200,255,0.6);
-                font-size:1.5rem;
-                font-weight:bold;
-            "
-        >
-            Application Closed.
-            You can close this window.
-        </div>
-
-    `;
-
-
-    await fetch(
-        "/api/shutdown",
-        {{
-            method: "POST"
-        }}
-    );
-
-}}
-
-
-</script>
+{DASHBOARD_JS}
 
 
 </body>
@@ -1882,11 +2645,109 @@ async function logout() {{
 
 
 # =========================================================
+# API - ACCOUNT / LICENSE
+# =========================================================
+
+def account_request(path):
+
+    data = request.get_json(silent=True) or {}
+
+    username = str(data.get("username", "")).strip()
+
+    password = str(data.get("password", ""))
+
+
+    if not username or not password:
+        return jsonify({"error": "Enter a username and password."}), 400
+
+
+    result, err, status = license_request(
+        path, {"username": username, "password": password}
+    )
+
+    if result is None:
+        return jsonify({"error": err}), status or 502
+
+
+    apply_license(result, token=result["token"])
+
+    return jsonify({"status": "success"})
+
+
+@app.route("/api/login", methods=["POST"])
+def account_login():
+
+    return account_request("/api/login")
+
+
+@app.route("/api/register", methods=["POST"])
+def account_register():
+
+    return account_request("/api/register")
+
+
+@app.route("/api/license", methods=["POST"])
+def license_status():
+
+    if not logged_in():
+        return jsonify({"logged_in": False}), 401
+
+
+    return jsonify({
+        "logged_in": True,
+        "username": license_state["username"],
+        "remaining_seconds": remaining_seconds(),
+    })
+
+
+@app.route("/api/redeem", methods=["POST"])
+def redeem_key():
+
+    if not logged_in():
+        return jsonify({"error": "Please log in first."}), 401
+
+
+    data = request.get_json(silent=True) or {}
+
+    key = str(data.get("key", "")).strip()
+
+    if not key:
+        return jsonify({"error": "Enter a license key."}), 400
+
+
+    result, err, status = license_request(
+        "/api/redeem", {"token": license_state["token"], "key": key}
+    )
+
+    if result is None:
+
+        if status in (401, 403):
+            clear_license()
+
+        return jsonify({"error": err}), status or 502
+
+
+    apply_license(result)
+
+    return jsonify({
+        "status": "success",
+        "added_days": result.get("added_days", 0),
+        "remaining_seconds": remaining_seconds(),
+    })
+
+
+# =========================================================
 # API - UPDATE CONFIG
 # =========================================================
 
 @app.route("/api/update", methods=["POST"])
 def update_config():
+
+    if not license_active():
+        return jsonify({
+            "error": "No license time remaining."
+        }), 403
+
 
     data = request.json
 
@@ -1991,6 +2852,12 @@ def toggle_macro():
 
     if "active" in data:
 
+        if data["active"] and not license_active():
+            return jsonify({
+                "error": "No license time remaining."
+            }), 403
+
+
         config[key] = bool(
             data["active"]
         )
@@ -2059,7 +2926,7 @@ def auto_build_loop():
     # keybind every auto_build_delay_ms.
     while True:
 
-        if not config["auto_build_active"]:
+        if not (config["auto_build_active"] and license_active()):
 
             time.sleep(0.05)
 
@@ -2089,7 +2956,7 @@ def on_press(key):
     global is_pressed
 
 
-    if not config["active"]:
+    if not (config["active"] and license_active()):
         return
 
 
@@ -2109,9 +2976,9 @@ def on_press(key):
         )
 
 
-        # Make sure the macro wasn't
-        # disabled during the delay.
-        if config["active"]:
+        # Make sure the macro wasn't disabled (or the
+        # license didn't run out) during the delay.
+        if config["active"] and license_active():
 
             controller.press(
                 config["target_key"]
@@ -2160,6 +3027,12 @@ if __name__ == "__main__":
 
     threading.Thread(
         target=auto_build_loop,
+        daemon=True
+    ).start()
+
+
+    threading.Thread(
+        target=license_sync_loop,
         daemon=True
     ).start()
 
