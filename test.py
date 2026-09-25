@@ -69,6 +69,7 @@ license_lock = threading.Lock()
 integrity_state = {
     "checked": False,
     "message": None,
+    "enforced": False,
 }
 
 
@@ -358,8 +359,27 @@ def check_integrity():
         if data:
             integrity_state["checked"] = True
             integrity_state["message"] = None
+            integrity_state["enforced"] = bool(data.get("enforced"))
 
     return integrity_state["message"]
+
+
+def build_status():
+
+    # (text, css class) describing the build check, for the login
+    # screen and System Information.
+    check_integrity()
+
+    if integrity_state["message"]:
+        return "Modified or out of date", "err"
+
+    if not integrity_state["checked"]:
+        return "Not verified (can't reach the license server)", "warn"
+
+    if integrity_state["enforced"]:
+        return "Verified \u2713 approved build", "ok"
+
+    return "Not checked (no approved builds on the server)", "warn"
 
 
 def license_sync_loop():
@@ -1572,6 +1592,26 @@ COMMON_CSS = """
     }
 
 
+    .build-status {
+        font-weight: 600;
+    }
+
+
+    .build-status.ok {
+        color: #4ade80;
+    }
+
+
+    .build-status.warn {
+        color: #f5b942;
+    }
+
+
+    .build-status.err {
+        color: var(--off);
+    }
+
+
     .auth-hwid {
         margin-top: 18px;
 
@@ -2244,6 +2284,8 @@ LOGIN_PAGE = """
 
                 <div class="auth-hwid">
                     HWID: __HWID__
+                    <br>
+                    BUILD: <span class="build-status __BUILD_CLASS__">__BUILD_STATUS__</span>
                 </div>
 
 
@@ -3188,6 +3230,8 @@ def render_login():
 
     message = check_integrity()
 
+    status_text, status_class = build_status()
+
     banner = (
         f'<div class="integrity-banner" id="integrityMsg">{html_escape(message)}</div>'
         if message else ""
@@ -3199,6 +3243,8 @@ def render_login():
         .replace("__COMMON_JS__", COMMON_JS)
         .replace("__INTEGRITY__", banner)
         .replace("__HWID__", html_escape(cached_hwid()))
+        .replace("__BUILD_STATUS__", html_escape(status_text))
+        .replace("__BUILD_CLASS__", status_class)
     )
 
 
@@ -3255,6 +3301,8 @@ def home():
     public_ip = get_public_ip()
 
     hwid = cached_hwid()
+
+    build_text, build_class = build_status()
 
 
     macro_toggle = toggle_html(
@@ -3702,6 +3750,17 @@ def home():
 
                 <div class="info-box">
                     {html_escape(hwid)}
+                </div>
+
+
+                <label>
+                    App Build
+                </label>
+
+                <div class="info-box">
+                    <span class="build-status {build_class}">{html_escape(build_text)}</span>
+                    <br>
+                    {app_hash()}
                 </div>
 
 

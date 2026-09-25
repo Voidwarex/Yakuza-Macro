@@ -227,11 +227,16 @@ MODIFIED_MESSAGE = (
 )
 
 
-def build_approved(conn, data):
+def builds_enforced(conn):
 
     # With no approved builds the check is off, so a fresh server
     # doesn't lock everyone out before approvebuild has been run.
-    if conn.execute("SELECT 1 FROM approved_builds LIMIT 1").fetchone() is None:
+    return conn.execute("SELECT 1 FROM approved_builds LIMIT 1").fetchone() is not None
+
+
+def build_approved(conn, data):
+
+    if not builds_enforced(conn):
         return True
 
     app_hash = str(data.get("app_hash", "")).strip().lower()
@@ -385,7 +390,9 @@ def integrity():
         if not build_approved(conn, read_json()):
             return build_error()
 
-    return jsonify({"ok": True})
+        enforced = builds_enforced(conn)
+
+    return jsonify({"ok": True, "enforced": enforced})
 
 
 @app.route("/api/status", methods=["POST"])
