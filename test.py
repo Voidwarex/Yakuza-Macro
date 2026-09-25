@@ -8,6 +8,9 @@ import urllib.request
 import urllib.error
 import json
 import os
+import socket
+import sys
+import tempfile
 
 from flask import Flask, request, jsonify
 from pynput import keyboard
@@ -126,6 +129,78 @@ def cached_hwid():
         _hwid_cache = get_hwid()
 
     return _hwid_cache
+
+
+# =========================================================
+# BACKGROUND MODE
+# =========================================================
+
+APP_PORT = 5000
+
+APP_URL = f"http://127.0.0.1:{APP_PORT}"
+
+
+def relaunch_without_console():
+
+    # On Windows, python.exe always opens a console window. Restart
+    # under pythonw.exe (no window) and let this copy exit, which
+    # closes the console. Run with --console to keep it for debugging.
+    if platform.system() != "Windows" or getattr(sys, "frozen", False):
+        return
+
+    if "--console" in sys.argv:
+        return
+
+
+    exe = os.path.basename(sys.executable).lower()
+
+    if not exe.startswith("python") or exe.startswith("pythonw"):
+        return
+
+
+    pythonw = os.path.join(
+        os.path.dirname(sys.executable),
+        exe.replace("python", "pythonw", 1)
+    )
+
+    if not os.path.exists(pythonw):
+        return
+
+
+    subprocess.Popen(
+        [pythonw, os.path.abspath(__file__), *sys.argv[1:]],
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        close_fds=True
+    )
+
+    sys.exit(0)
+
+
+def redirect_output_to_log():
+
+    # pythonw has no console, so print() and errors would vanish.
+    # Send them to a log file instead so problems can be diagnosed.
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    log = open(
+        os.path.join(tempfile.gettempdir(), "yakuza.log"),
+        "a",
+        buffering=1,
+        encoding="utf8"
+    )
+
+    sys.stdout = sys.stdout or log
+    sys.stderr = sys.stderr or log
+
+
+def app_already_running():
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+        s.settimeout(0.5)
+
+        return s.connect_ex(("127.0.0.1", APP_PORT)) == 0
 
 
 # =========================================================
@@ -540,9 +615,19 @@ COMMON_CSS = """
 
     .logout-btn {
         margin-top: auto;
-        margin-bottom: 16px;
 
         color: #c46a76;
+    }
+
+
+    .exit-btn {
+        margin-top: 0;
+        margin-bottom: 16px;
+    }
+
+
+    .auth-exit {
+        margin-top: 14px;
     }
 
 
@@ -1825,6 +1910,22 @@ COMMON_CSS = """
         </symbol>
 
         <symbol
+            id="icon-power"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round">
+
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+
+            <line x1="12" y1="2" x2="12" y2="12"></line>
+
+        </symbol>
+
+
+        <symbol
             id="icon-shield"
             viewBox="0 0 24 24"
             fill="none"
@@ -1891,6 +1992,44 @@ function showMsg(el, text, ok) {
     el.classList.remove("ok", "err");
 
     el.classList.add(ok ? "ok" : "err");
+
+}
+
+
+async function exitApp() {
+
+    document.body.innerHTML = `
+
+        <div
+            style="
+                display:flex;
+                height:100vh;
+                width:100vw;
+                justify-content:center;
+                align-items:center;
+                background:#06080d;
+                color:#cfeeff;
+                font-family:Oxanium, sans-serif;
+                letter-spacing:0.1em;
+                text-shadow:0 0 10px rgba(92,200,255,0.6);
+                font-size:1.5rem;
+                font-weight:bold;
+            "
+        >
+            Application Closed.
+            You can close this window.
+        </div>
+
+    `;
+
+
+    try {
+
+        await fetch("/api/shutdown", { method: "POST" });
+
+    }
+
+    catch (error) {}
 
 }
 
@@ -2012,6 +2151,11 @@ LOGIN_PAGE = """
                 <div class="auth-hwid">
                     HWID: __HWID__
                 </div>
+
+
+                <button class="btn-sm auth-exit" onclick="exitApp()">
+                    Exit App
+                </button>
 
 
             </div>
@@ -2181,6 +2325,9 @@ function formatRemaining(seconds) {
 function renderLicense() {
 
     const el = document.getElementById("licenseTime");
+
+    // The page may have been replaced (e.g. after Exit).
+    if (!el) return;
 
     const locked = remaining <= 0;
 
@@ -3114,6 +3261,20 @@ def home():
 
         </a>
 
+
+        <a
+            class="nav-item logout-btn exit-btn"
+            onclick="exitApp()"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-power"></use>
+            </svg>
+
+            <span>Exit</span>
+
+        </a>
+
     </div>
 
 </nav>
@@ -3770,6 +3931,15 @@ def toggle_macro():
 @app.route("/api/shutdown", methods=["POST"])
 def shutdown():
 
+    # End the license session too, so it isn't left open.
+    token = license_state["token"]
+
+    clear_license()
+
+    if token:
+        license_request("/api/logout", {"token": token})
+
+
     def close_server():
 
         time.sleep(0.5)
@@ -3802,7 +3972,7 @@ def run_server():
 
     app.run(
         host="127.0.0.1",
-        port=5000,
+        port=APP_PORT,
         debug=False,
         use_reloader=False
     )
@@ -3903,9 +4073,23 @@ def on_release(key):
 
 if __name__ == "__main__":
 
+    relaunch_without_console()
+
+    redirect_output_to_log()
+
+
+    # Opening the app again while it's already running just
+    # brings up the dashboard instead of starting a second copy.
+    if app_already_running():
+
+        webbrowser.open(APP_URL)
+
+        sys.exit(0)
+
+
     print(
         "Starting Yakuza Solutions control server "
-        "at http://127.0.0.1:5000"
+        f"at {APP_URL}"
     )
 
 
@@ -3932,9 +4116,7 @@ if __name__ == "__main__":
     time.sleep(1)
 
 
-    webbrowser.open(
-        "http://127.0.0.1:5000"
-    )
+    webbrowser.open(APP_URL)
 
 
     with keyboard.Listener(
