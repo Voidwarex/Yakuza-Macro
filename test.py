@@ -41,7 +41,7 @@ is_pressed = False
 # (use https:// in production) or set YAKUZA_LICENSE_SERVER.
 LICENSE_SERVER = os.environ.get(
     "YAKUZA_LICENSE_SERVER",
-    "http://127.0.0.1:8000"
+    "http://170.64.171.207"
 ).rstrip("/")
 
 LICENSE_SYNC_SECONDS = 60
