@@ -26,6 +26,11 @@ Approved app builds (see "Build check" in the README):
     python license_server.py listbuilds
     python license_server.py revokebuild <sha256-hash>
 
+Free-time events (also in the Admin Panel):
+    python license_server.py createevent "Free Weekend" 48 [--start "2026-10-03 18:00"]
+    python license_server.py listevents
+    python license_server.py endevent <id>
+
 Admin accounts (see the Admin Panel in the app):
     python license_server.py createadmin admin
     python license_server.py setadmin <username> [--off]
@@ -100,6 +105,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    start_at   INTEGER NOT NULL,
+    end_at     INTEGER NOT NULL,
+    settled    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS approved_builds (
     hash       TEXT    PRIMARY KEY,
     label      TEXT,
@@ -147,10 +161,174 @@ def init_db():
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
+        settle_events(conn)
+
 
 def now():
 
     return int(time.time())
+
+
+# =========================================================
+# EVENTS
+# =========================================================
+#
+# During a free-time event everyone can use the app and paid
+# licenses are paused: their time left is measured against the
+# event's start, so it stands still. When the event ends,
+# settle_events pushes back the expiry of everyone who still had
+# time at the start by the event's length, so it resumes as it was.
+
+MAX_EVENT_HOURS = 31 * 24
+
+
+def settle_events(conn):
+
+    for event in conn.execute(
+        "SELECT * FROM events WHERE settled = 0 AND end_at <= ? ORDER BY start_at",
+        (now(),)
+    ).fetchall():
+
+        # Claim the event first so two requests can't both apply it.
+        claimed = conn.execute(
+            "UPDATE events SET settled = 1 WHERE id = ? AND settled = 0",
+            (event["id"],)
+        )
+
+        if claimed.rowcount != 1:
+            continue
+
+        conn.execute(
+            "UPDATE users SET expires_at = expires_at + ? WHERE expires_at > ?",
+            (event["end_at"] - event["start_at"], event["start_at"])
+        )
+
+
+def active_event(conn):
+
+    t = now()
+
+    return conn.execute(
+        """
+        SELECT * FROM events
+        WHERE settled = 0 AND start_at <= ? AND end_at > ?
+        ORDER BY start_at LIMIT 1
+        """,
+        (t, t)
+    ).fetchone()
+
+
+def next_event(conn):
+
+    return conn.execute(
+        "SELECT * FROM events WHERE start_at > ? ORDER BY start_at LIMIT 1",
+        (now(),)
+    ).fetchone()
+
+
+def paid_clock(conn):
+
+    # The time paid licenses are measured against: frozen at the
+    # start of a running event, otherwise now.
+    event = active_event(conn)
+
+    return event["start_at"] if event else now()
+
+
+def create_event(conn, name, start_at, hours):
+
+    # Returns (event_id, None) or (None, error_message).
+    t = now()
+
+    name = str(name or "").strip()[:60] or "Free Weekend"
+
+
+    try:
+        hours = float(hours)
+        start_at = int(start_at or 0)
+    except (TypeError, ValueError):
+        return None, "Enter a start time and a length in hours."
+
+
+    if not hours > 0:
+        return None, "Enter how many hours the event lasts."
+
+    if hours > MAX_EVENT_HOURS:
+        return None, f"Events can last up to {MAX_EVENT_HOURS} hours."
+
+    # No start time, or one a moment ago, means start now.
+    if start_at <= 0 or t - 300 <= start_at < t:
+        start_at = t
+
+    if start_at < t:
+        return None, "That start time has already passed."
+
+
+    end_at = start_at + int(hours * 3600)
+
+    overlap = conn.execute(
+        "SELECT name FROM events WHERE settled = 0 AND start_at < ? AND end_at > ?",
+        (end_at, start_at)
+    ).fetchone()
+
+    if overlap:
+        return None, f"That overlaps the {overlap['name']} event."
+
+
+    cur = conn.execute(
+        "INSERT INTO events (name, start_at, end_at, created_at) VALUES (?, ?, ?, ?)",
+        (name, start_at, end_at, t)
+    )
+
+    return cur.lastrowid, None
+
+
+def end_event(conn, event_id):
+
+    # Cancels an upcoming event or ends a running one now.
+    # Returns (message, None) or (None, error_message).
+    event = conn.execute(
+        "SELECT * FROM events WHERE id = ? AND settled = 0", (event_id,)
+    ).fetchone()
+
+    if event is None:
+        return None, "No upcoming or running event with that id."
+
+
+    t = now()
+
+    if event["start_at"] > t:
+
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
+
+        return f"Cancelled {event['name']}.", None
+
+
+    conn.execute("UPDATE events SET end_at = ? WHERE id = ?", (t, event_id))
+
+    settle_events(conn)
+
+    return f"Ended {event['name']}. Paused keys have resumed.", None
+
+
+def event_row(event):
+
+    t = now()
+
+    if event["settled"] or event["end_at"] <= t:
+        status = "ended"
+    elif event["start_at"] <= t:
+        status = "live"
+    else:
+        status = "upcoming"
+
+    return {
+        "id": event["id"],
+        "name": event["name"],
+        "start_at": event["start_at"],
+        "end_at": event["end_at"],
+        "status": status,
+    }
 
 
 def generate_key(key_type):
@@ -190,12 +368,40 @@ def user_from_token(conn, token):
     ).fetchone()
 
 
-def license_payload(user):
+def license_payload(conn, user):
+
+    t = now()
+
+    event = active_event(conn)
+
+    upcoming = next_event(conn)
+
+    paid = max(0, user["expires_at"] - (event["start_at"] if event else t))
+
+    event_left = event["end_at"] - t if event else 0
+
 
     return {
         "username": user["username"],
         "expires_at": user["expires_at"],
-        "remaining_seconds": max(0, user["expires_at"] - now()),
+
+        # How long the app stays unlocked: the rest of any running
+        # event plus the paid time that resumes after it.
+        "remaining_seconds": paid + event_left,
+
+        "paid_seconds": paid,
+
+        "event": {
+            "name": event["name"],
+            "remaining_seconds": event_left,
+        } if event else None,
+
+        "next_event": {
+            "name": upcoming["name"],
+            "starts_in": upcoming["start_at"] - t,
+            "hours": round((upcoming["end_at"] - upcoming["start_at"]) / 3600, 1),
+        } if upcoming else None,
+
         "is_admin": bool(user["is_admin"]),
     }
 
@@ -205,6 +411,15 @@ def license_payload(user):
 # =========================================================
 
 app = Flask(__name__)
+
+
+@app.before_request
+def settle_finished_events():
+
+    # Resume paused licenses as soon as an event has ended, before
+    # anything reads them.
+    with get_db() as conn:
+        settle_events(conn)
 
 
 def error(message, status=400):
@@ -322,7 +537,7 @@ def register():
         token = create_session(conn, user["id"])
 
 
-    return jsonify({"ok": True, "token": token, **license_payload(user)})
+    return jsonify({"ok": True, "token": token, **license_payload(conn, user)})
 
 
 @app.route("/api/login", methods=["POST"])
@@ -378,7 +593,7 @@ def login():
         token = create_session(conn, user["id"])
 
 
-    return jsonify({"ok": True, "token": token, **license_payload(user)})
+    return jsonify({"ok": True, "token": token, **license_payload(conn, user)})
 
 
 @app.route("/api/integrity", methods=["POST"])
@@ -409,7 +624,7 @@ def status():
             return err
 
 
-    return jsonify({"ok": True, **license_payload(user)})
+    return jsonify({"ok": True, **license_payload(conn, user)})
 
 
 @app.route("/api/logout", methods=["POST"])
@@ -461,7 +676,7 @@ def redeem():
 
 
         # Stack on top of any time still remaining.
-        new_expiry = max(now(), user["expires_at"]) + duration_days * 86400
+        new_expiry = max(paid_clock(conn), user["expires_at"]) + duration_days * 86400
 
         conn.execute(
             "UPDATE users SET expires_at = ? WHERE id = ?", (new_expiry, user["id"])
@@ -475,7 +690,7 @@ def redeem():
     return jsonify({
         "ok": True,
         "added_days": duration_days,
-        **license_payload(user),
+        **license_payload(conn, user),
     })
 
 
@@ -527,9 +742,7 @@ def target_user(conn, data):
     return user, None
 
 
-def admin_user_row(row):
-
-    t = now()
+def admin_user_row(row, t):
 
     return {
         "username": row["username"],
@@ -548,7 +761,8 @@ def admin_user_row(row):
 @admin_route("overview")
 def overview(conn, admin, data):
 
-    t = now()
+    # Paid time is measured against the frozen clock during an event.
+    t = paid_clock(conn)
 
     users = conn.execute(
         """
@@ -558,7 +772,7 @@ def overview(conn, admin, data):
         FROM users
         ORDER BY users.created_at DESC
         """,
-        (t,)
+        (now(),)
     ).fetchall()
 
 
@@ -590,7 +804,13 @@ def overview(conn, admin, data):
             "keys_unused": unused,
         },
 
-        "users": [admin_user_row(u) for u in users],
+        "users": [admin_user_row(u, t) for u in users],
+
+        "events": [
+            event_row(e) for e in conn.execute(
+                "SELECT * FROM events ORDER BY start_at DESC LIMIT 20"
+            ).fetchall()
+        ],
 
         "keys": [
             {
@@ -623,7 +843,7 @@ def admin_addtime(conn, admin, data):
 
     # Adding starts from now if the license has run out; taking
     # time away never goes below zero.
-    t = now()
+    t = paid_clock(conn)
 
     new_expiry = max(t, max(t, user["expires_at"]) + seconds)
 
@@ -650,7 +870,7 @@ def admin_settime(conn, admin, data):
 
 
     conn.execute(
-        "UPDATE users SET expires_at = ? WHERE id = ?", (now() + seconds, user["id"])
+        "UPDATE users SET expires_at = ? WHERE id = ?", (paid_clock(conn) + seconds, user["id"])
     )
 
     return jsonify({"ok": True, "remaining_seconds": seconds})
@@ -740,6 +960,35 @@ def admin_genkeys(conn, admin, data):
     return jsonify({"ok": True, "keys": keys})
 
 
+@admin_route("event_create")
+def admin_event_create(conn, admin, data):
+
+    event_id, err = create_event(
+        conn, data.get("name"), data.get("start_at"), data.get("hours")
+    )
+
+    if err:
+        return error(err)
+
+    return jsonify({"ok": True, "id": event_id})
+
+
+@admin_route("event_end")
+def admin_event_end(conn, admin, data):
+
+    try:
+        event_id = int(data.get("id"))
+    except (TypeError, ValueError):
+        return error("Missing event id.")
+
+    message, err = end_event(conn, event_id)
+
+    if err:
+        return error(err)
+
+    return jsonify({"ok": True, "message": message})
+
+
 @admin_route("deletekey")
 def admin_deletekey(conn, admin, data):
 
@@ -758,9 +1007,9 @@ def admin_deletekey(conn, admin, data):
 # ADMIN CLI
 # =========================================================
 
-def format_remaining(expires_at):
+def format_remaining(expires_at, clock=None):
 
-    remaining = expires_at - now()
+    remaining = expires_at - (clock or now())
 
     if remaining <= 0:
         return "expired"
@@ -848,6 +1097,8 @@ def cmd_listusers(args):
 
     with get_db() as conn:
 
+        clock = paid_clock(conn)
+
         for row in conn.execute("SELECT * FROM users ORDER BY created_at"):
 
             flags = " ".join(
@@ -856,7 +1107,7 @@ def cmd_listusers(args):
 
             print(
                 f"{row['username']:<24}  "
-                f"{format_remaining(row['expires_at']):<14}  "
+                f"{format_remaining(row['expires_at'], clock):<14}  "
                 f"hwid={row['hwid'] or '-'}  {flags}"
             )
 
@@ -896,13 +1147,15 @@ def cmd_addtime(args):
 
         user = find_user(conn, args.username)
 
-        new_expiry = max(now(), user["expires_at"]) + int(args.days * 86400)
+        clock = paid_clock(conn)
+
+        new_expiry = max(clock, user["expires_at"]) + int(args.days * 86400)
 
         conn.execute(
             "UPDATE users SET expires_at = ? WHERE id = ?", (new_expiry, user["id"])
         )
 
-    print(f"{user['username']} now has {format_remaining(new_expiry)} remaining.")
+    print(f"{user['username']} now has {format_remaining(new_expiry, clock)} remaining.")
 
 
 def cmd_createadmin(args):
@@ -1066,6 +1319,74 @@ def cmd_revokebuild(args):
     print("Build revoked.")
 
 
+def format_time(ts):
+
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+
+
+def cmd_createevent(args):
+
+    init_db()
+
+    start_at = 0
+
+    if args.start:
+        try:
+            start_at = int(time.mktime(time.strptime(args.start, "%Y-%m-%d %H:%M")))
+        except ValueError:
+            sys.exit('Use --start "YYYY-MM-DD HH:MM" (server local time).')
+
+
+    with get_db() as conn:
+
+        event_id, err = create_event(conn, args.name, start_at, args.hours)
+
+        if err:
+            sys.exit(err)
+
+        event = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+
+    print(
+        f"Event {event_id} ({event['name']}): "
+        f"{format_time(event['start_at'])} to {format_time(event['end_at'])}"
+    )
+
+
+def cmd_listevents(args):
+
+    init_db()
+
+    with get_db() as conn:
+
+        rows = conn.execute("SELECT * FROM events ORDER BY start_at").fetchall()
+
+    if not rows:
+        print("No events.")
+
+    for row in rows:
+
+        e = event_row(row)
+
+        print(
+            f"{e['id']:<4} {e['status']:<9} {format_time(e['start_at'])} to "
+            f"{format_time(e['end_at'])}  {e['name']}"
+        )
+
+
+def cmd_endevent(args):
+
+    init_db()
+
+    with get_db() as conn:
+
+        message, err = end_event(conn, args.id)
+
+    if err:
+        sys.exit(err)
+
+    print(message)
+
+
 def main():
 
     parser = argparse.ArgumentParser(description="Yakuza Solutions license server")
@@ -1120,6 +1441,19 @@ def main():
     p.add_argument("username")
     p.set_defaults(func=cmd_deleteuser)
 
+
+    p = sub.add_parser("createevent", help="schedule a free-time event")
+    p.add_argument("name")
+    p.add_argument("hours", type=float, help="how long it lasts, e.g. 48")
+    p.add_argument("--start", help='"YYYY-MM-DD HH:MM" server time; default now')
+    p.set_defaults(func=cmd_createevent)
+
+    p = sub.add_parser("listevents", help="list events")
+    p.set_defaults(func=cmd_listevents)
+
+    p = sub.add_parser("endevent", help="end a running event or cancel an upcoming one")
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_endevent)
 
     p = sub.add_parser("approvebuild", help="allow an app build to log in")
     p.add_argument("target", help="path to the app file, or its SHA-256 hash")

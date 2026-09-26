@@ -52,6 +52,36 @@ account still has.
 | `createadmin <username>` | Create an admin account (asks for a password) |
 | `setadmin <username> [--off]` | Give or remove admin rights |
 
+## Free-time events
+
+Run events like a free weekend from the **Events** section of the Admin
+Panel: give it a name, a start time (leave empty to start now) and a
+length in hours.
+
+While an event runs:
+
+- everyone who logs in can use the app, including accounts with no key
+  or an expired one;
+- paid keys are paused, so their time left stays the same the whole way
+  through;
+- the dashboard shows a banner with the time left in the event, and a
+  countdown before an upcoming one starts.
+
+When the event ends (or you press **End Now**) every key resumes with
+exactly the time it had when the event started. Keys redeemed and time
+added during the event also only start counting down after it. Events
+can't overlap. **Cancel** removes an event that hasn't started yet.
+
+From the server:
+
+```
+python license_server.py createevent "Free Weekend" 48 --start "2026-10-03 18:00"
+python license_server.py listevents
+python license_server.py endevent <id>
+```
+
+`--start` is in the server's local time; leave it out to start now.
+
 ## Build check
 
 The app sends a SHA-256 hash of itself (`test.py`, or the `.exe` if you

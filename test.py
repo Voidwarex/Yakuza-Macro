@@ -59,6 +59,11 @@ license_state = {
     "remaining": 0.0,
     "synced_at": 0.0,
     "is_admin": False,
+
+    # Free-time event info from the server, counted down from
+    # synced_at like remaining.
+    "event": None,
+    "next_event": None,
 }
 
 license_lock = threading.Lock()
@@ -311,6 +316,10 @@ def apply_license(data, token=None):
 
         license_state["synced_at"] = time.monotonic()
 
+        license_state["event"] = data.get("event")
+
+        license_state["next_event"] = data.get("next_event")
+
         if "is_admin" in data:
             license_state["is_admin"] = bool(data["is_admin"])
 
@@ -323,6 +332,8 @@ def clear_license():
         license_state["username"] = None
         license_state["remaining"] = 0.0
         license_state["is_admin"] = False
+        license_state["event"] = None
+        license_state["next_event"] = None
 
 
 def logged_in():
@@ -345,6 +356,33 @@ def remaining_seconds():
 def license_active():
 
     return remaining_seconds() > 0
+
+
+def event_info():
+
+    # The running and next free-time events, with their countdowns
+    # brought up to date, for the dashboard.
+    with license_lock:
+
+        elapsed = time.monotonic() - license_state["synced_at"]
+
+        event = license_state["event"]
+
+        upcoming = license_state["next_event"]
+
+
+    return {
+        "event": {
+            "name": event["name"],
+            "remaining_seconds": max(0.0, event["remaining_seconds"] - elapsed),
+        } if event else None,
+
+        "next_event": {
+            "name": upcoming["name"],
+            "starts_in": max(0.0, upcoming["starts_in"] - elapsed),
+            "hours": upcoming.get("hours"),
+        } if upcoming else None,
+    }
 
 
 def check_integrity():
@@ -1438,6 +1476,45 @@ COMMON_CSS = """
     }
 
 
+    .event-banner {
+        display: none;
+
+        margin-bottom: 16px;
+        padding: 12px 14px;
+
+        border-radius: 10px;
+
+        font-weight: 600;
+        font-size: 0.92rem;
+    }
+
+
+    .event-banner.live {
+        display: block;
+
+        background: rgba(74, 222, 128, 0.12);
+        border: 1px solid #4ade80;
+
+        color: #4ade80;
+    }
+
+
+    .event-banner.upcoming {
+        display: block;
+
+        background: rgba(92, 200, 255, 0.08);
+        border: 1px solid var(--panel-border);
+
+        color: var(--bolt-bright);
+    }
+
+
+    .license-time.paused {
+        color: var(--text-muted);
+        text-shadow: none;
+    }
+
+
     .license-time.expired {
         color: var(--off);
         text-shadow: 0 0 14px rgba(255, 77, 98, 0.4);
@@ -1700,6 +1777,20 @@ COMMON_CSS = """
     }
 
 
+    .admin-tools .muted {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+    }
+
+
+    .admin-note {
+        margin: 0 0 10px;
+
+        font-size: 0.82rem;
+        color: var(--text-muted);
+    }
+
+
     .admin-tools .form-input,
     .admin-tools select.form-input {
         width: auto;
@@ -1825,6 +1916,8 @@ COMMON_CSS = """
     .badge.expired { color: var(--text-muted); }
     .badge.banned  { color: var(--off); }
     .badge.admin   { color: var(--storm-violet); }
+    .badge.live    { color: #4ade80; }
+    .badge.upcoming { color: var(--bolt-bright); }
 
 
     .online-dot {
@@ -2448,6 +2541,27 @@ let remaining = Number(
 let lastTick = performance.now();
 
 
+// Free-time events. While one runs, remaining = event time left +
+// the paused key time that resumes after it.
+let liveEvent = null;
+
+let nextEvent = null;
+
+
+function setEvents(info) {
+
+    liveEvent = info.event;
+
+    nextEvent = info.next_event;
+
+}
+
+
+setEvents(JSON.parse(
+    document.getElementById("licenseTime").dataset.events || "{}"
+));
+
+
 function formatRemaining(seconds) {
 
     seconds = Math.floor(seconds);
@@ -2477,9 +2591,62 @@ function renderLicense() {
 
     const locked = remaining <= 0;
 
-    el.innerText = formatRemaining(remaining);
+    const live = liveEvent && liveEvent.remaining_seconds > 0;
 
-    el.classList.toggle("expired", locked);
+    const banner = document.getElementById("eventBanner");
+
+    const label = document.getElementById("licenseLabel");
+
+
+    if (live) {
+
+        // Show the key's own time, which stays paused.
+        const paid = Math.max(0, remaining - liveEvent.remaining_seconds);
+
+        banner.className = "event-banner live";
+
+        banner.innerText =
+            liveEvent.name + " is live! Free access for everyone for another " +
+            formatRemaining(liveEvent.remaining_seconds) +
+            ". Your key's time is paused until it ends.";
+
+        label.innerText = "Key Time (paused)";
+
+        el.innerText = paid > 0 ? formatRemaining(paid) : "No key time";
+
+        el.classList.add("paused");
+
+        el.classList.remove("expired");
+
+    }
+
+    else {
+
+        if (nextEvent && nextEvent.starts_in > 0) {
+
+            banner.className = "event-banner upcoming";
+
+            banner.innerText =
+                nextEvent.name + " starts in " + formatRemaining(nextEvent.starts_in) +
+                " (" + nextEvent.hours + "h of free access for everyone).";
+
+        }
+
+        else {
+
+            banner.className = "event-banner";
+
+        }
+
+        label.innerText = "Time Remaining";
+
+        el.innerText = formatRemaining(remaining);
+
+        el.classList.remove("paused");
+
+        el.classList.toggle("expired", locked);
+
+    }
 
     document
         .querySelectorAll(".card.lockable")
@@ -2492,9 +2659,30 @@ setInterval(() => {
 
     const t = performance.now();
 
-    remaining = Math.max(0, remaining - (t - lastTick) / 1000);
+    const dt = (t - lastTick) / 1000;
+
+    remaining = Math.max(0, remaining - dt);
 
     lastTick = t;
+
+
+    // Sync as soon as an event starts or ends so the server's
+    // numbers take over.
+    let changed = false;
+
+    if (liveEvent && liveEvent.remaining_seconds > 0) {
+        liveEvent.remaining_seconds = Math.max(0, liveEvent.remaining_seconds - dt);
+        changed = changed || liveEvent.remaining_seconds === 0;
+    }
+
+    if (nextEvent && nextEvent.starts_in > 0) {
+        nextEvent.starts_in = Math.max(0, nextEvent.starts_in - dt);
+        changed = changed || nextEvent.starts_in === 0;
+    }
+
+    if (changed) {
+        setTimeout(syncLicense, 3000);
+    }
 
     renderLicense();
 
@@ -2514,6 +2702,7 @@ async function syncLicense() {
 
         if (res.ok) {
             remaining = res.body.remaining_seconds;
+            setEvents(res.body);
             lastTick = performance.now();
             renderLicense();
         }
@@ -2767,6 +2956,79 @@ ADMIN_VIEW = """
                 <div class="admin-stats" id="adminStats"></div>
 
 
+                <!-- EVENTS -->
+
+                <div class="admin-section-title">
+
+                    <h3>Events</h3>
+
+                    <div class="admin-tools">
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="eventName"
+                            value="Free Weekend"
+                            maxlength="60"
+                            placeholder="Event name"
+                        >
+
+                        <input
+                            class="form-input"
+                            type="datetime-local"
+                            id="eventStart"
+                            title="Start time. Leave empty to start now."
+                        >
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="eventHours"
+                            value="48"
+                            min="1"
+                            step="any"
+                            style="width: 90px"
+                            title="Length in hours"
+                        >
+
+                        <span class="muted">hours</span>
+
+                        <button class="btn-sm primary" onclick="createFreeEvent()">
+                            Create Event
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <p class="muted admin-note">
+                    Everyone gets free access while an event runs, and paid keys
+                    are paused. Leave the start empty to begin now.
+                </p>
+
+
+                <div class="table-wrap">
+
+                    <table class="admin-table">
+
+                        <thead>
+                            <tr>
+                                <th>Event</th>
+                                <th>Status</th>
+                                <th>Starts</th>
+                                <th>Ends</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="eventsBody"></tbody>
+
+                    </table>
+
+                </div>
+
+
                 <!-- USERS -->
 
                 <div class="admin-section-title">
@@ -2953,6 +3215,7 @@ async function loadAdmin() {
     adminData = res.body;
 
     renderStats();
+    renderEvents();
     renderUsers();
     renderKeys();
 
@@ -3127,6 +3390,100 @@ function renderKeys() {
 }
 
 
+function renderEvents() {
+
+    const body = document.getElementById("eventsBody");
+
+    const events = adminData.events || [];
+
+
+    if (!events.length) {
+
+        body.replaceChildren(
+            el("tr", { class: "empty-row" }, [el("td", { colspan: "5", text: "No events yet." })])
+        );
+
+        return;
+
+    }
+
+
+    const labels = { live: "Live", upcoming: "Upcoming", ended: "Ended" };
+
+    body.replaceChildren(...events.map(e => {
+
+        const actions = [];
+
+        if (e.status === "live") {
+            actions.push(el("button", { class: "btn-sm danger", text: "End Now",
+                onclick: () => endFreeEvent(e, "End " + e.name + " now? Paused keys resume straight away.") }));
+        }
+
+        if (e.status === "upcoming") {
+            actions.push(el("button", { class: "btn-sm danger", text: "Cancel",
+                onclick: () => endFreeEvent(e, "Cancel " + e.name + "?") }));
+        }
+
+
+        return el("tr", {}, [
+            el("td", { class: "user-name", text: e.name }),
+            el("td", {}, [el("span", { class: "badge " + (e.status === "ended" ? "expired" : e.status),
+                text: labels[e.status] })]),
+            el("td", { class: "muted", text: fmtDate(e.start_at) }),
+            el("td", { class: "muted", text: fmtDate(e.end_at) }),
+            el("td", {}, [el("div", { class: "row-actions" }, actions)]),
+        ]);
+
+    }));
+
+}
+
+
+async function createFreeEvent() {
+
+    const start = document.getElementById("eventStart").value;
+
+    const hours = Number(document.getElementById("eventHours").value);
+
+    if (!(hours > 0)) {
+        adminMsg("Enter how many hours the event lasts.", false);
+        return;
+    }
+
+
+    // datetime-local is in this PC's local time; send it as a
+    // unix timestamp so the server doesn't need to know the zone.
+    const res = await adminCall("event_create", {
+        name: document.getElementById("eventName").value,
+        start_at: start ? Math.floor(new Date(start).getTime() / 1000) : 0,
+        hours: hours
+    });
+
+    if (res.ok) {
+        adminMsg("Event created.", true);
+        document.getElementById("eventStart").value = "";
+        loadAdmin();
+        syncLicense();
+    }
+
+}
+
+
+async function endFreeEvent(e, question) {
+
+    if (!confirm(question)) return;
+
+    const res = await adminCall("event_end", { id: e.id });
+
+    if (res.ok) {
+        adminMsg(res.body.message, true);
+        loadAdmin();
+        syncLicense();
+    }
+
+}
+
+
 async function changeTime(username, action, days) {
 
     if (!isFinite(days)) {
@@ -3219,6 +3576,7 @@ async function deleteKey(key) {
 
 ADMIN_ACTIONS = {
     "overview", "addtime", "settime", "ban", "resethwid", "genkeys", "deletekey",
+    "event_create", "event_end",
 }
 
 
@@ -3317,6 +3675,8 @@ def home():
     username = html_escape(license_state["username"] or "")
 
     remaining = int(remaining_seconds())
+
+    events_json = html_escape(json.dumps(event_info()))
 
     locked = "" if remaining > 0 else "locked"
 
@@ -3515,12 +3875,15 @@ def home():
                     </div>
 
 
+                    <div class="event-banner" id="eventBanner"></div>
+
+
                     <div class="license-row">
 
 
                         <div>
 
-                            <div class="license-label">
+                            <div class="license-label" id="licenseLabel">
                                 Time Remaining
                             </div>
 
@@ -3528,6 +3891,7 @@ def home():
                                 class="license-time"
                                 id="licenseTime"
                                 data-remaining="{remaining}"
+                                data-events="{events_json}"
                             >
                                 --
                             </div>
@@ -3863,10 +4227,28 @@ def license_status():
         return jsonify({"logged_in": False}), 401
 
 
+    # Around the start or end of an event, fetch fresh numbers from
+    # the server instead of waiting for the next background sync.
+    info = event_info()
+
+    if (
+        (info["event"] and info["event"]["remaining_seconds"] <= 0)
+        or (info["next_event"] and info["next_event"]["starts_in"] <= 0)
+    ):
+
+        data, err, status = license_request(
+            "/api/status", {"token": license_state["token"]}
+        )
+
+        if data:
+            apply_license(data)
+
+
     return jsonify({
         "logged_in": True,
         "username": license_state["username"],
         "remaining_seconds": remaining_seconds(),
+        **event_info(),
     })
 
 
@@ -3909,9 +4291,12 @@ def admin_action(action):
         return jsonify({"error": err}), status or 502
 
 
-    # If the admin changed their own time, refresh the local
-    # license right away instead of waiting for the next sync.
-    if str(data.get("username", "")).lower() == (license_state["username"] or "").lower():
+    # If the admin changed their own time or an event, refresh the
+    # local license right away instead of waiting for the next sync.
+    if (
+        action.startswith("event_")
+        or str(data.get("username", "")).lower() == (license_state["username"] or "").lower()
+    ):
 
         own, _, _ = license_request(
             "/api/status", {"token": license_state["token"]}
