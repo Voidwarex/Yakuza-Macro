@@ -1435,6 +1435,173 @@ COMMON_CSS = """
 
 
     /* =====================================================
+       CONTROLLER TEST
+       ===================================================== */
+
+    .dashboard-grid .controller-card {
+        grid-column: 1 / -1;
+    }
+
+
+    .pad-status {
+        padding: 4px 12px;
+
+        border: 1px solid var(--panel-border);
+        border-radius: 999px;
+
+        font-weight: 700;
+        font-size: 0.72rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+
+        color: var(--text-muted);
+    }
+
+
+    .pad-status.on {
+        border-color: #4ade80;
+        color: #4ade80;
+    }
+
+
+    .pad-name {
+        margin-bottom: 18px;
+
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--text-muted);
+
+        word-break: break-word;
+    }
+
+
+    .pad-layout {
+        display: flex;
+        gap: 28px;
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+
+    .pad-sticks {
+        display: flex;
+        gap: 22px;
+    }
+
+
+    .pad-stick-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+    }
+
+
+    .pad-stick {
+        position: relative;
+
+        width: 96px;
+        height: 96px;
+
+        background: rgba(3, 4, 8, 0.65);
+        border: 1px solid var(--panel-border);
+        border-radius: 50%;
+    }
+
+
+    .pad-dot {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+
+        width: 18px;
+        height: 18px;
+        margin: -9px 0 0 -9px;
+
+        background: var(--bolt);
+        border-radius: 50%;
+
+        box-shadow: 0 0 12px rgba(92, 200, 255, 0.6);
+    }
+
+
+    .pad-dot.pressed {
+        background: #4ade80;
+        box-shadow: 0 0 14px rgba(74, 222, 128, 0.8);
+    }
+
+
+    .pad-buttons {
+        flex: 1;
+
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+        gap: 8px;
+
+        min-width: 240px;
+    }
+
+
+    .pad-btn {
+        position: relative;
+        overflow: hidden;
+
+        padding: 9px 4px;
+
+        background: rgba(3, 4, 8, 0.65);
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+
+        text-align: center;
+
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        font-weight: 600;
+
+        color: var(--text-muted);
+    }
+
+
+    .pad-btn span {
+        position: relative;
+    }
+
+
+    .pad-btn .pad-fill {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+
+        width: 100%;
+        height: 0;
+
+        background: rgba(92, 200, 255, 0.25);
+    }
+
+
+    .pad-btn.pressed {
+        border-color: #4ade80;
+        color: #4ade80;
+
+        box-shadow: 0 0 12px rgba(74, 222, 128, 0.35);
+    }
+
+
+    .pad-last {
+        margin-top: 18px;
+
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+
+    .pad-last span {
+        font-family: var(--font-mono);
+        color: var(--bolt-bright);
+    }
+
+
+    /* =====================================================
        LICENSE CARD
        ===================================================== */
 
@@ -2905,6 +3072,196 @@ async function logout() {
 }
 
 
+// =========================================================
+// CONTROLLER TEST
+// =========================================================
+
+// Button names for the browser's "standard" (Xbox-style) layout.
+// PlayStation: A = Cross, B = Circle, X = Square, Y = Triangle.
+const PAD_NAMES = [
+    "A", "B", "X", "Y", "LB", "RB", "LT", "RT",
+    "View", "Menu", "LS", "RS", "Up", "Down", "Left", "Right", "Home",
+];
+
+let padIndex = null;
+
+let padChips = [];
+
+let padPressed = [];
+
+
+function padButtonName(pad, i) {
+
+    return pad.mapping === "standard" && PAD_NAMES[i] ? PAD_NAMES[i] : "B" + i;
+
+}
+
+
+function buildPadButtons(pad) {
+
+    const box = document.getElementById("padButtons");
+
+    padChips = pad.buttons.map((_, i) => {
+
+        const chip = document.createElement("div");
+
+        chip.className = "pad-btn";
+
+        const fill = document.createElement("div");
+
+        fill.className = "pad-fill";
+
+        const label = document.createElement("span");
+
+        label.textContent = padButtonName(pad, i);
+
+        chip.append(fill, label);
+
+        return chip;
+
+    });
+
+    box.replaceChildren(...padChips);
+
+    padPressed = pad.buttons.map(() => false);
+
+}
+
+
+function moveStick(id, x, y, pressed) {
+
+    const dot = document.getElementById(id);
+
+    // 39px = stick radius (48) minus the dot radius (9).
+    dot.style.transform = "translate(" + (x * 39) + "px, " + (y * 39) + "px)";
+
+    dot.classList.toggle("pressed", pressed);
+
+}
+
+
+function showPadStatus(pad) {
+
+    const status = document.getElementById("padStatus");
+
+    const name = document.getElementById("padName");
+
+    if (pad) {
+
+        status.textContent = "Connected";
+
+        status.classList.add("on");
+
+        name.textContent = pad.id;
+
+    }
+
+    else {
+
+        status.textContent = "No controller";
+
+        status.classList.remove("on");
+
+        name.textContent = "Plug in a controller and press any button on it.";
+
+        document.getElementById("padButtons").replaceChildren();
+
+        padChips = [];
+
+        moveStick("stickL", 0, 0, false);
+
+        moveStick("stickR", 0, 0, false);
+
+    }
+
+}
+
+
+function pollPad() {
+
+    requestAnimationFrame(pollPad);
+
+    if (!document.getElementById("padButtons")) return;
+
+
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+
+    let pad = padIndex !== null ? pads[padIndex] : null;
+
+
+    // Use the first controller that shows up.
+    if (!pad) {
+
+        pad = Array.from(pads).find(p => p) || null;
+
+        if (!pad) {
+
+            // The controller went away without a disconnect event.
+            if (padIndex !== null) {
+                padIndex = null;
+                showPadStatus(null);
+            }
+
+            return;
+
+        }
+
+        padIndex = pad.index;
+
+        buildPadButtons(pad);
+
+        showPadStatus(pad);
+
+    }
+
+
+    pad.buttons.forEach((button, i) => {
+
+        const chip = padChips[i];
+
+        if (!chip) return;
+
+        chip.classList.toggle("pressed", button.pressed);
+
+        // Triggers are analog: fill the chip by how far they're pulled.
+        chip.firstChild.style.height = Math.round(button.value * 100) + "%";
+
+        if (button.pressed && !padPressed[i]) {
+            document.getElementById("padLast").textContent = padButtonName(pad, i);
+        }
+
+        padPressed[i] = button.pressed;
+
+    });
+
+
+    const axis = n => {
+        const v = pad.axes[n] || 0;
+        return Math.abs(v) < 0.08 ? 0 : v;
+    };
+
+    const stickPressed = i => !!(pad.buttons[i] && pad.buttons[i].pressed);
+
+    moveStick("stickL", axis(0), axis(1), stickPressed(10));
+
+    moveStick("stickR", axis(2), axis(3), stickPressed(11));
+
+}
+
+
+window.addEventListener("gamepaddisconnected", event => {
+
+    if (event.gamepad.index === padIndex) {
+        padIndex = null;
+        showPadStatus(null);
+    }
+
+});
+
+
+requestAnimationFrame(pollPad);
+
+
 </script>
 """
 
@@ -4071,6 +4428,58 @@ def home():
 
 
                     </form>
+
+
+                </div>
+
+
+                <!-- CONTROLLER TEST -->
+
+                <div class="card controller-card">
+
+
+                    <div class="card-header">
+
+                        <h2>
+                            Controller Test
+                        </h2>
+
+                        <span class="pad-status" id="padStatus">
+                            No controller
+                        </span>
+
+                    </div>
+
+
+                    <div class="pad-name" id="padName">
+                        Plug in a controller and press any button on it.
+                    </div>
+
+
+                    <div class="pad-layout">
+
+                        <div class="pad-sticks">
+
+                            <div class="pad-stick-wrap">
+                                <div class="pad-stick"><div class="pad-dot" id="stickL"></div></div>
+                                <div class="license-label">Left Stick</div>
+                            </div>
+
+                            <div class="pad-stick-wrap">
+                                <div class="pad-stick"><div class="pad-dot" id="stickR"></div></div>
+                                <div class="license-label">Right Stick</div>
+                            </div>
+
+                        </div>
+
+                        <div class="pad-buttons" id="padButtons"></div>
+
+                    </div>
+
+
+                    <div class="pad-last">
+                        Last input: <span id="padLast">-</span>
+                    </div>
 
 
                 </div>
