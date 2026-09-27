@@ -9,6 +9,27 @@ accounts and time-based license keys served by `license_server.py`.
 pip install flask pynput
 ```
 
+For a controller trigger and target (Windows only), also:
+
+```
+pip install vgamepad
+```
+
+On Windows this also runs the ViGEmBus driver installer; accept it.
+
+## Controller mode
+
+In the Hotkey card, switch **Trigger** to **Controller**, then use each
+**Bind** button and press the controller button you want for the
+trigger and for the target. The app reads your controller through
+Windows' XInput, so it works while the game has focus. PlayStation
+controllers need Steam Input or DS4Windows so they appear as Xbox pads.
+
+The target is pressed on a virtual Xbox 360 controller (vgamepad +
+ViGEmBus), because Windows can't fake presses on a real controller. The
+game sees it as a second controller alongside yours. The trigger and
+target must be different buttons.
+
 ## 1. Run the license server (you host this)
 
 ```

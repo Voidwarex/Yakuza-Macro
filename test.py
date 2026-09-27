@@ -30,6 +30,10 @@ config = {
     # a controller button name such as "RB" (see PAD_BUTTONS).
     "trigger_source": "keyboard",
     "trigger_pad": "RB",
+
+    # In controller mode the target is a button on a virtual
+    # controller instead of target_key.
+    "target_pad": "A",
     "target_key": "p",
     "active": True,
 
@@ -41,6 +45,12 @@ config = {
 
 controller = keyboard.Controller()
 is_pressed = False
+
+# What the macro is holding down right now, e.g. ("key", "p") or
+# ("pad", "A"), so it's released even if the binding changes.
+held_output = None
+
+press_lock = threading.Lock()
 
 
 # =========================================================
@@ -3097,15 +3107,25 @@ function setTriggerSource(source) {
     document.getElementById("keyboardBind").hidden = pad;
     document.getElementById("controllerBind").hidden = !pad;
 
+    document.getElementById("targetKeyboard").hidden = pad;
+    document.getElementById("targetController").hidden = !pad;
+
 }
 
+
+// Each Bind button fills in its field from the next controller
+// button pressed.
+const PAD_BINDS = {
+    trigger: { field: "trigger_pad", btn: "padBindBtn", msg: "padBindMsg" },
+    target: { field: "target_pad", btn: "targetBindBtn", msg: "targetBindMsg" },
+};
 
 let padBinding = null;
 
 
-function padBindHint(text, isError) {
+function padBindHint(which, text, isError) {
 
-    const hint = document.getElementById("padBindMsg");
+    const hint = document.getElementById(PAD_BINDS[which].msg);
 
     hint.textContent = text;
 
@@ -3118,32 +3138,39 @@ function stopPadBinding(text, isError) {
 
     if (!padBinding) return;
 
+    const ids = PAD_BINDS[padBinding.which];
+
     cancelAnimationFrame(padBinding.frame);
 
+    document.getElementById(ids.field).classList.remove("listening");
+
+    document.getElementById(ids.btn).textContent = "Bind";
+
+    padBindHint(padBinding.which, text, isError);
+
     padBinding = null;
-
-    document.getElementById("trigger_pad").classList.remove("listening");
-
-    document.getElementById("padBindBtn").textContent = "Bind";
-
-    padBindHint(text, isError);
 
 }
 
 
-function bindPadTrigger() {
+function bindPad(which) {
 
-    // Clicking Bind again cancels.
+    // Clicking Bind again cancels; clicking the other one switches.
     if (padBinding) {
+
+        const same = padBinding.which === which;
+
         stopPadBinding("Cancelled.", false);
-        return;
+
+        if (same) return;
+
     }
 
 
     const pads = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(p => p);
 
     if (!pads.length) {
-        padBindHint("No controller found. Press any button on it, then click Bind.", true);
+        padBindHint(which, "No controller found. Press any button on it, then click Bind.", true);
         return;
     }
 
@@ -3153,13 +3180,13 @@ function bindPadTrigger() {
 
     pads.forEach(p => p.buttons.forEach((b, i) => { if (b.pressed) held.add(p.index + ":" + i); }));
 
-    padBinding = { held: held, until: performance.now() + 10000, frame: 0 };
+    padBinding = { which: which, held: held, until: performance.now() + 10000, frame: 0 };
 
-    document.getElementById("trigger_pad").classList.add("listening");
+    document.getElementById(PAD_BINDS[which].field).classList.add("listening");
 
-    document.getElementById("padBindBtn").textContent = "Cancel";
+    document.getElementById(PAD_BINDS[which].btn).textContent = "Cancel";
 
-    padBindHint("Press a button on your controller...", false);
+    padBindHint(which, "Press a button on your controller...", false);
 
     padBinding.frame = requestAnimationFrame(watchPadBinding);
 
@@ -3196,11 +3223,11 @@ function watchPadBinding() {
             const name = pad.mapping === "standard" ? PAD_NAMES[i] : null;
 
             if (!name || name === "Home") {
-                stopPadBinding("That button can't be used as a trigger. Pick another.", true);
+                stopPadBinding("That button can't be used. Pick another.", true);
                 return;
             }
 
-            document.getElementById("trigger_pad").value = name;
+            document.getElementById(PAD_BINDS[padBinding.which].field).value = name;
 
             stopPadBinding("Bound to " + name + ". Click Save Settings to use it.", false);
 
@@ -3223,21 +3250,25 @@ async function saveSettings(event) {
     const data = {
         trigger_source: triggerSource,
         trigger_pad: document.getElementById("trigger_pad").value,
-        target_key: document.getElementById("target_key").value,
+        target_pad: document.getElementById("target_pad").value,
         delay_ms: document.getElementById("delay_ms").value
     };
 
 
     if (triggerSource === "keyboard") {
 
-        const key = document.getElementById("trigger_key").value;
+        for (const id of ["trigger_key", "target_key"]) {
 
-        if (!key) {
-            document.getElementById("trigger_key").focus();
-            return;
+            const input = document.getElementById(id);
+
+            if (!input.value) {
+                input.focus();
+                return;
+            }
+
+            data[id] = input.value;
+
         }
-
-        data.trigger_key = key;
 
     }
 
@@ -4576,7 +4607,7 @@ def home():
                                     readonly
                                 >
 
-                                <button type="button" class="btn-sm" id="padBindBtn" onclick="bindPadTrigger()">
+                                <button type="button" class="btn-sm" id="padBindBtn" onclick="bindPad('trigger')">
                                     Bind
                                 </button>
 
@@ -4590,17 +4621,45 @@ def home():
 
 
                         <label>
-                            Target Key:
+                            Target:
                         </label>
 
-                        <input
-                            class="form-input"
-                            type="text"
-                            id="target_key"
-                            value="{html_escape(config['target_key'])}"
-                            maxlength="1"
-                            required
-                        >
+                        <div id="targetKeyboard" {keyboard_hidden}>
+
+                            <input
+                                class="form-input"
+                                type="text"
+                                id="target_key"
+                                value="{html_escape(config['target_key'])}"
+                                maxlength="1"
+                                placeholder="Key"
+                            >
+
+                        </div>
+
+                        <div id="targetController" {controller_hidden}>
+
+                            <div class="bind-row">
+
+                                <input
+                                    class="form-input"
+                                    type="text"
+                                    id="target_pad"
+                                    value="{html_escape(config['target_pad'])}"
+                                    readonly
+                                >
+
+                                <button type="button" class="btn-sm" id="targetBindBtn" onclick="bindPad('target')">
+                                    Bind
+                                </button>
+
+                            </div>
+
+                            <div class="bind-hint" id="targetBindMsg">
+                                Pressed on a virtual controller the game sees.
+                            </div>
+
+                        </div>
 
 
                         <label>
@@ -5046,8 +5105,25 @@ def update_config():
     if source not in ("keyboard", "controller"):
         return jsonify({"error": "Pick keyboard or controller."}), 400
 
-    if source == "controller" and pad not in PAD_BUTTONS:
-        return jsonify({"error": "Bind a controller button first."}), 400
+    target_pad = data.get("target_pad", config["target_pad"])
+
+    if source == "controller":
+
+        if pad not in PAD_BUTTONS:
+            return jsonify({"error": "Bind a trigger button first."}), 400
+
+        if target_pad not in PAD_BUTTONS:
+            return jsonify({"error": "Bind a target button first."}), 400
+
+        if target_pad == pad:
+            return jsonify({"error": "The trigger and target can't be the same button."}), 400
+
+        # Set up the virtual controller now so a missing driver shows
+        # up here instead of silently mid-game.
+        try:
+            virtual_pad()
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 400
 
 
     # Let go of anything the old binding is holding down.
@@ -5057,6 +5133,8 @@ def update_config():
     config["trigger_source"] = source
 
     config["trigger_pad"] = pad
+
+    config["target_pad"] = target_pad
 
 
     config["trigger_key"] = (
@@ -5262,9 +5340,47 @@ def auto_build_loop():
         )
 
 
+def press_output():
+
+    # Presses the target: a keyboard key, or in controller mode a
+    # button on the virtual controller. Returns what was pressed.
+    if config["trigger_source"] == "controller":
+
+        name = config["target_pad"]
+
+        try:
+            set_pad_button(name, True)
+        except RuntimeError as e:
+            print(e)
+            return None
+
+        return ("pad", name)
+
+
+    controller.press(config["target_key"])
+
+    return ("key", config["target_key"])
+
+
+def release_output(output):
+
+    kind, name = output
+
+    if kind == "pad":
+
+        try:
+            set_pad_button(name, False)
+        except RuntimeError as e:
+            print(e)
+
+    else:
+
+        controller.release(name)
+
+
 def trigger_down():
 
-    global is_pressed
+    global is_pressed, held_output
 
 
     if is_pressed or not (config["active"] and license_active()):
@@ -5279,29 +5395,28 @@ def trigger_down():
     )
 
 
-    # Make sure the macro wasn't disabled (or the
-    # license didn't run out) during the delay.
-    if config["active"] and license_active():
+    with press_lock:
 
-        controller.press(
-            config["target_key"]
-        )
+        # Make sure the trigger wasn't let go, the macro disabled or
+        # the license run out during the delay.
+        if not (is_pressed and config["active"] and license_active()):
+            return
+
+        held_output = press_output()
 
 
 def trigger_up():
 
-    global is_pressed
+    global is_pressed, held_output
 
 
-    if not is_pressed:
-        return
+    with press_lock:
 
+        is_pressed = False
 
-    is_pressed = False
-
-    controller.release(
-        config["target_key"]
-    )
+        if held_output:
+            release_output(held_output)
+            held_output = None
 
 
 def on_press(key):
@@ -5403,6 +5518,67 @@ def pad_button_held(pad, name):
         return pad.bRightTrigger > PAD_TRIGGER_THRESHOLD
 
     return bool(pad.wButtons & PAD_BUTTONS[name])
+
+
+# =========================================================
+# VIRTUAL CONTROLLER
+# =========================================================
+#
+# Windows can't fake presses on a real controller, so in controller
+# mode the target button is pressed on a virtual Xbox 360 controller
+# made with vgamepad (which needs the ViGEmBus driver). Games see it
+# as a second controller.
+
+_virtual_pad = None
+
+
+def virtual_pad():
+
+    # Created the first time it's needed. Raises RuntimeError with a
+    # message for the user if it can't be.
+    global _virtual_pad
+
+
+    if _virtual_pad is None:
+
+        try:
+            import vgamepad
+        except ImportError:
+            raise RuntimeError(
+                "A controller target needs vgamepad. Run: pip install vgamepad "
+                "(it also installs the ViGEmBus driver), then restart the app."
+            )
+
+        try:
+            _virtual_pad = vgamepad.VX360Gamepad()
+        except Exception:
+            raise RuntimeError(
+                "Couldn't create the virtual controller. Install the ViGEmBus "
+                "driver (pip install vgamepad sets it up), then restart the app."
+            )
+
+
+    return _virtual_pad
+
+
+def set_pad_button(name, down):
+
+    pad = virtual_pad()
+
+    if name == "LT":
+        pad.left_trigger(value=255 if down else 0)
+
+    elif name == "RT":
+        pad.right_trigger(value=255 if down else 0)
+
+    # XInput's button bits are the same values vgamepad uses.
+    elif down:
+        pad.press_button(button=PAD_BUTTONS[name])
+
+    else:
+        pad.release_button(button=PAD_BUTTONS[name])
+
+    pad.update()
 
 
 def controller_loop():
