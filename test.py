@@ -58,10 +58,12 @@ press_lock = threading.Lock()
 # =========================================================
 
 # Address of license_server.py. Point this at your hosted server
-# (use https:// in production) or set YAKUZA_LICENSE_SERVER.
-LICENSE_SERVER = os.environ.get(
-    "YAKUZA_LICENSE_SERVER",
-    "http://170.64.171.207"
+# (use https:// in production) or set AMOS_LICENSE_SERVER.
+# YAKUZA_LICENSE_SERVER, from before the rename, still works.
+LICENSE_SERVER = (
+    os.environ.get("AMOS_LICENSE_SERVER")
+    or os.environ.get("YAKUZA_LICENSE_SERVER")
+    or "http://170.64.171.207"
 ).rstrip("/")
 
 LICENSE_SYNC_SECONDS = 60
@@ -253,7 +255,7 @@ def redirect_output_to_log():
         return
 
     log = open(
-        os.path.join(tempfile.gettempdir(), "yakuza.log"),
+        os.path.join(tempfile.gettempdir(), "amos.log"),
         "a",
         buffering=1,
         encoding="utf8"
@@ -2528,7 +2530,7 @@ LOGIN_PAGE = """
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Yakuza Solutions</title>
+    <title>Amos Solutions</title>
 
     __COMMON_CSS__
 
@@ -2546,7 +2548,7 @@ LOGIN_PAGE = """
         <div class="topbar-left">
 
             <div class="brand-title">
-                Yakuza Solutions
+                Amos Solutions
             </div>
 
         </div>
@@ -4399,7 +4401,7 @@ def home():
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>Yakuza Solutions</title>
+    <title>Amos Solutions</title>
 
     {COMMON_CSS}
 
@@ -4423,7 +4425,7 @@ def home():
                 <use href="#icon-zap"></use>
             </svg>
 
-            <span>Yakuza Solutions</span>
+            <span>Amos Solutions</span>
 
         </a>
 
@@ -4526,7 +4528,7 @@ def home():
             <!-- BRAND -->
 
             <div class="brand-title">
-                Yakuza Solutions
+                Amos Solutions
             </div>
 
 
@@ -5804,7 +5806,7 @@ if __name__ == "__main__":
 
 
     print(
-        "Starting Yakuza Solutions control server "
+        "Starting Amos Solutions control server "
         f"at {APP_URL}"
     )
 

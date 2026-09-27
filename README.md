@@ -1,4 +1,4 @@
-# Yakuza-Macro
+# Amos Solutions
 
 Keyboard macro app (`test.py`) with a web dashboard, locked behind
 accounts and time-based license keys served by `license_server.py`.
@@ -40,13 +40,13 @@ python license_server.py serve --host 0.0.0.0 --port 8000
 `serve` uses the `waitress` production server when it is installed.
 
 Accounts and keys are stored in `licenses.db` next to the script
-(override with `YAKUZA_DB_PATH`). Keep this file private and backed up.
+(override with `AMOS_DB_PATH`; the old `YAKUZA_DB_PATH` also works). Keep this file private and backed up.
 In production put the server behind HTTPS (e.g. a reverse proxy).
 
 ## 2. Point the app at your server
 
 Edit `LICENSE_SERVER` near the top of `test.py`, or set the
-`YAKUZA_LICENSE_SERVER` environment variable, e.g.
+`AMOS_LICENSE_SERVER` environment variable, e.g.
 `https://license.example.com`.
 
 ## 3. Sell keys

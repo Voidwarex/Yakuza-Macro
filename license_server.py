@@ -1,5 +1,5 @@
 """
-Yakuza Solutions license server.
+Amos Solutions license server.
 
 Holds the account + license key database and answers the macro
 client's login / register / redeem / status requests.
@@ -54,9 +54,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 # CONFIGURATION
 # =========================================================
 
-DB_PATH = os.environ.get(
-    "YAKUZA_DB_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "licenses.db")
+# AMOS_DB_PATH, or YAKUZA_DB_PATH from before the rename.
+DB_PATH = (
+    os.environ.get("AMOS_DB_PATH")
+    or os.environ.get("YAKUZA_DB_PATH")
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "licenses.db")
 )
 
 KEY_TYPES = {
@@ -1389,7 +1391,7 @@ def cmd_endevent(args):
 
 def main():
 
-    parser = argparse.ArgumentParser(description="Yakuza Solutions license server")
+    parser = argparse.ArgumentParser(description="Amos Solutions license server")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
