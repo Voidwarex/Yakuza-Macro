@@ -77,6 +77,8 @@
 
     a { color: inherit; }
 
+    a, button, summary { -webkit-tap-highlight-color: transparent; }
+
     :focus-visible { outline: 2px solid var(--bolt); outline-offset: 3px; border-radius: 6px; }
 
     h1, h2, h3 {
@@ -112,6 +114,7 @@
     /* ---------- Buttons ---------- */
 
     .btn {
+        white-space: nowrap;
         display: inline-flex;
         align-items: center;
         gap: 10px;
@@ -173,6 +176,7 @@
         letter-spacing: 0.1em;
         text-transform: uppercase;
         text-decoration: none;
+        white-space: nowrap;
     }
 
     .brand svg { color: var(--bolt); filter: drop-shadow(0 0 8px rgba(92, 200, 255, 0.6)); }
@@ -188,6 +192,25 @@
     .nav-links a:hover { color: var(--bolt-bright); }
 
     .nav .btn { padding: 9px 16px; font-size: 0.8rem; }
+
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+
+    .menu-btn {
+        display: none;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        padding: 0;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        background: rgba(14, 19, 27, 0.6);
+        color: var(--bolt-bright);
+        cursor: pointer;
+    }
+
+    .menu-btn .menu-close { display: none; }
+    .menu-btn[aria-expanded="true"] .menu-open { display: none; }
+    .menu-btn[aria-expanded="true"] .menu-close { display: inline; }
 
     /* ---------- Hero ---------- */
 
@@ -414,6 +437,9 @@
     /* ---------- Sections ---------- */
 
     section { padding-block: 84px; }
+
+    /* Keep headings clear of the sticky header when jumping to them. */
+    section, #top { scroll-margin-top: 76px; }
 
     .section-head { max-width: 40em; margin-bottom: 42px; }
 
@@ -731,11 +757,65 @@
         .hero, .controller { grid-template-columns: minmax(0, 1fr); gap: 44px; }
         .features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .steps, .plans { grid-template-columns: minmax(0, 1fr); }
-        .nav-links { display: none; }
+        .menu-btn { display: grid; }
+
+        .nav-links {
+            display: none;
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 100%;
+            flex-direction: column;
+            gap: 0;
+            padding: 8px 16px 14px;
+            background: var(--night);
+            box-shadow: 0 18px 30px rgba(0, 0, 0, 0.5);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .nav-links.open { display: flex; }
+
+        .nav-links a {
+            padding: 14px 8px;
+            border-bottom: 1px solid var(--line);
+            font-size: 1.05rem;
+            color: var(--text);
+        }
+
+        .nav-links a:last-child { border-bottom: 0; }
+
+        .plan.best { order: -1; }
     }
 
     @media (max-width: 600px) {
+        body { font-size: 16px; }
+        body::before { animation: none; }
         .wrap { padding-inline: 16px; }
+        .nav { height: 60px; }
+        .brand { font-size: 0.9rem; letter-spacing: 0.06em; }
+        .nav .btn { padding: 9px 12px; font-size: 0.72rem; letter-spacing: 0.08em; }
+        .hero h1 { font-size: clamp(2.1rem, 10vw, 2.6rem); }
+        .hero p.lead { font-size: 1.04rem; }
+        .hero-cta { flex-direction: column; }
+        .hero-cta .btn { justify-content: center; width: 100%; box-sizing: border-box; }
+        .hero-facts { flex-direction: column; gap: 6px; }
+        .demo-body { padding: 14px; gap: 12px; }
+        .bigkey { width: 54px; height: 54px; font-size: 1.3rem; }
+        .keyflow-labels { grid-template-columns: 54px 1fr 54px; }
+        .mini-log { min-height: 0; }
+        .feature { padding: 24px 20px; }
+        .step, .plan { padding: 24px 20px; }
+        .price { font-size: 2.2rem; }
+        .event { padding: 22px 20px; }
+        .pad-stage { padding: 18px 8px 14px; }
+        .faq summary { padding: 16px 18px; font-size: 1rem; }
+        .faq details p { padding: 0 18px 18px; }
+        .cta-band { padding-block: 50px; }
+        footer .wrap { flex-direction: column; }
+    }
+
+    @media (max-width: 400px) {
+        .brand-tail { display: none; }
         section { padding-block: 60px; }
         .hero { padding-block: 44px 60px; }
         .features { grid-template-columns: minmax(0, 1fr); }
@@ -767,17 +847,26 @@
     <nav class="wrap nav" aria-label="Main">
         <a class="brand" href="#top">
             <svg width="22" height="22"><use href="#bolt"></use></svg>
-            Amos Solutions
+            <span>Amos<span class="brand-tail"> Solutions</span></span>
         </a>
 
-        <div class="nav-links">
+        <div class="nav-links" id="navLinks">
             <a href="#features">Features</a>
             <a href="#controller">Controller</a>
             <a href="#pricing">Pricing</a>
             <a href="#faq">FAQ</a>
         </div>
 
-        <a class="btn btn-primary" href="#pricing">Get a key</a>
+        <div class="nav-actions">
+            <a class="btn btn-primary" href="#pricing">Get a key</a>
+
+            <button class="menu-btn" id="menuBtn" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="navLinks">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path class="menu-open" d="M4 7h16M4 12h16M4 17h16"></path>
+                    <path class="menu-close" d="M6 6l12 12M18 6L6 18"></path>
+                </svg>
+            </button>
+        </div>
     </nav>
 </header>
 
@@ -1223,6 +1312,24 @@ document.querySelectorAll("[data-price]").forEach(el => {
 });
 
 document.getElementById("year").textContent = new Date().getFullYear();
+
+
+// ---------- Phone menu ----------
+
+const menuBtn = document.getElementById("menuBtn");
+const navLinks = document.getElementById("navLinks");
+
+function setMenu(open) {
+    navLinks.classList.toggle("open", open);
+    menuBtn.setAttribute("aria-expanded", String(open));
+    menuBtn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+}
+
+menuBtn.addEventListener("click", () => setMenu(!navLinks.classList.contains("open")));
+
+navLinks.querySelectorAll("a").forEach(a => a.addEventListener("click", () => setMenu(false)));
+
+document.addEventListener("keydown", e => { if (e.key === "Escape") setMenu(false); });
 
 
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
