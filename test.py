@@ -8,6 +8,7 @@ import urllib.request
 import urllib.error
 import json
 import hashlib
+import ctypes
 import os
 import socket
 import sys
@@ -24,6 +25,11 @@ from pynput import keyboard
 config = {
     "delay_ms": 10,
     "trigger_key": "e",
+
+    # "keyboard" uses trigger_key; "controller" uses trigger_pad,
+    # a controller button name such as "RB" (see PAD_BUTTONS).
+    "trigger_source": "keyboard",
+    "trigger_pad": "RB",
     "target_key": "p",
     "active": True,
 
@@ -1808,6 +1814,49 @@ COMMON_CSS = """
     }
 
 
+    .bind-tabs {
+        margin-top: 8px;
+        margin-bottom: 0;
+    }
+
+
+    .bind-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+
+
+    .bind-row .form-input {
+        flex: 1;
+    }
+
+
+    .bind-row .btn-sm {
+        margin-top: 8px;
+        padding: 10px 16px;
+    }
+
+
+    .bind-row .form-input.listening {
+        border-color: #4ade80;
+        color: #4ade80;
+    }
+
+
+    .bind-hint {
+        margin-top: 6px;
+
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+
+    .bind-hint.err {
+        color: var(--off);
+    }
+
+
     .auth-tab.active {
         background: rgba(92, 200, 255, 0.14);
         color: var(--bolt-bright);
@@ -3010,6 +3059,12 @@ async function postSettings(data, btn) {
 
         }
 
+        else {
+
+            alert(res.body.error || "Couldn't save settings.");
+
+        }
+
     }
 
     catch (error) {
@@ -3021,18 +3076,173 @@ async function postSettings(data, btn) {
 }
 
 
+// =========================================================
+// TRIGGER BINDING
+// =========================================================
+
+let triggerSource =
+    document.getElementById("srcController").classList.contains("active")
+        ? "controller" : "keyboard";
+
+
+function setTriggerSource(source) {
+
+    triggerSource = source;
+
+    const pad = source === "controller";
+
+    document.getElementById("srcKeyboard").classList.toggle("active", !pad);
+    document.getElementById("srcController").classList.toggle("active", pad);
+
+    document.getElementById("keyboardBind").hidden = pad;
+    document.getElementById("controllerBind").hidden = !pad;
+
+}
+
+
+let padBinding = null;
+
+
+function padBindHint(text, isError) {
+
+    const hint = document.getElementById("padBindMsg");
+
+    hint.textContent = text;
+
+    hint.classList.toggle("err", !!isError);
+
+}
+
+
+function stopPadBinding(text, isError) {
+
+    if (!padBinding) return;
+
+    cancelAnimationFrame(padBinding.frame);
+
+    padBinding = null;
+
+    document.getElementById("trigger_pad").classList.remove("listening");
+
+    document.getElementById("padBindBtn").textContent = "Bind";
+
+    padBindHint(text, isError);
+
+}
+
+
+function bindPadTrigger() {
+
+    // Clicking Bind again cancels.
+    if (padBinding) {
+        stopPadBinding("Cancelled.", false);
+        return;
+    }
+
+
+    const pads = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(p => p);
+
+    if (!pads.length) {
+        padBindHint("No controller found. Press any button on it, then click Bind.", true);
+        return;
+    }
+
+
+    // Remember what's already held so only a fresh press binds.
+    const held = new Set();
+
+    pads.forEach(p => p.buttons.forEach((b, i) => { if (b.pressed) held.add(p.index + ":" + i); }));
+
+    padBinding = { held: held, until: performance.now() + 10000, frame: 0 };
+
+    document.getElementById("trigger_pad").classList.add("listening");
+
+    document.getElementById("padBindBtn").textContent = "Cancel";
+
+    padBindHint("Press a button on your controller...", false);
+
+    padBinding.frame = requestAnimationFrame(watchPadBinding);
+
+}
+
+
+function watchPadBinding() {
+
+    if (!padBinding) return;
+
+
+    if (performance.now() > padBinding.until) {
+        stopPadBinding("No button pressed. Click Bind to try again.", true);
+        return;
+    }
+
+
+    for (const pad of navigator.getGamepads()) {
+
+        if (!pad) continue;
+
+        for (let i = 0; i < pad.buttons.length; i++) {
+
+            const id = pad.index + ":" + i;
+
+            if (!pad.buttons[i].pressed) {
+                padBinding.held.delete(id);
+                continue;
+            }
+
+            if (padBinding.held.has(id)) continue;
+
+
+            const name = pad.mapping === "standard" ? PAD_NAMES[i] : null;
+
+            if (!name || name === "Home") {
+                stopPadBinding("That button can't be used as a trigger. Pick another.", true);
+                return;
+            }
+
+            document.getElementById("trigger_pad").value = name;
+
+            stopPadBinding("Bound to " + name + ". Click Save Settings to use it.", false);
+
+            return;
+
+        }
+
+    }
+
+
+    padBinding.frame = requestAnimationFrame(watchPadBinding);
+
+}
+
+
 async function saveSettings(event) {
 
     event.preventDefault();
 
-    await postSettings(
-        {
-            trigger_key: document.getElementById("trigger_key").value,
-            target_key: document.getElementById("target_key").value,
-            delay_ms: document.getElementById("delay_ms").value
-        },
-        document.getElementById("saveBtn")
-    );
+    const data = {
+        trigger_source: triggerSource,
+        trigger_pad: document.getElementById("trigger_pad").value,
+        target_key: document.getElementById("target_key").value,
+        delay_ms: document.getElementById("delay_ms").value
+    };
+
+
+    if (triggerSource === "keyboard") {
+
+        const key = document.getElementById("trigger_key").value;
+
+        if (!key) {
+            document.getElementById("trigger_key").focus();
+            return;
+        }
+
+        data.trigger_key = key;
+
+    }
+
+
+    await postSettings(data, document.getElementById("saveBtn"));
 
 }
 
@@ -4033,6 +4243,18 @@ def home():
 
     remaining = int(remaining_seconds())
 
+    use_pad = config["trigger_source"] == "controller"
+
+    keyboard_tab, controller_tab = ("", "active") if use_pad else ("active", "")
+
+    keyboard_hidden, controller_hidden = ("hidden", "") if use_pad else ("", "hidden")
+
+    pad_hint = (
+        "Click Bind, then press a button on your controller."
+        if xinput is not None else
+        "Controller triggers need Windows. Binding works here, but the macro won't fire."
+    )
+
     events_json = html_escape(json.dumps(event_info()))
 
     locked = "" if remaining > 0 else "locked"
@@ -4312,17 +4534,59 @@ def home():
 
 
                         <label>
-                            Trigger Key:
+                            Trigger:
                         </label>
 
-                        <input
-                            class="form-input"
-                            type="text"
-                            id="trigger_key"
-                            value="{html_escape(config['trigger_key'])}"
-                            maxlength="1"
-                            required
-                        >
+                        <div class="auth-tabs bind-tabs">
+
+                            <button type="button" class="auth-tab {keyboard_tab}" id="srcKeyboard"
+                                onclick="setTriggerSource('keyboard')">
+                                Keyboard
+                            </button>
+
+                            <button type="button" class="auth-tab {controller_tab}" id="srcController"
+                                onclick="setTriggerSource('controller')">
+                                Controller
+                            </button>
+
+                        </div>
+
+                        <div id="keyboardBind" {keyboard_hidden}>
+
+                            <input
+                                class="form-input"
+                                type="text"
+                                id="trigger_key"
+                                value="{html_escape(config['trigger_key'])}"
+                                maxlength="1"
+                                placeholder="Key"
+                            >
+
+                        </div>
+
+                        <div id="controllerBind" {controller_hidden}>
+
+                            <div class="bind-row">
+
+                                <input
+                                    class="form-input"
+                                    type="text"
+                                    id="trigger_pad"
+                                    value="{html_escape(config['trigger_pad'])}"
+                                    readonly
+                                >
+
+                                <button type="button" class="btn-sm" id="padBindBtn" onclick="bindPadTrigger()">
+                                    Bind
+                                </button>
+
+                            </div>
+
+                            <div class="bind-hint" id="padBindMsg">
+                                {pad_hint}
+                            </div>
+
+                        </div>
 
 
                         <label>
@@ -4775,6 +5039,26 @@ def update_config():
         }), 400
 
 
+    source = data.get("trigger_source", config["trigger_source"])
+
+    pad = data.get("trigger_pad", config["trigger_pad"])
+
+    if source not in ("keyboard", "controller"):
+        return jsonify({"error": "Pick keyboard or controller."}), 400
+
+    if source == "controller" and pad not in PAD_BUTTONS:
+        return jsonify({"error": "Bind a controller button first."}), 400
+
+
+    # Let go of anything the old binding is holding down.
+    trigger_up()
+
+
+    config["trigger_source"] = source
+
+    config["trigger_pad"] = pad
+
+
     config["trigger_key"] = (
         str(
             data.get(
@@ -4978,58 +5262,208 @@ def auto_build_loop():
         )
 
 
-def on_press(key):
+def trigger_down():
 
     global is_pressed
 
 
-    if not (config["active"] and license_active()):
+    if is_pressed or not (config["active"] and license_active()):
         return
 
 
-    char = getattr(key, "char", None)
-
-    if char is None:
-        return
+    is_pressed = True
 
 
-    if char == config["trigger_key"] and not is_pressed:
+    time.sleep(
+        config["delay_ms"] / 1000.0
+    )
 
-        is_pressed = True
 
+    # Make sure the macro wasn't disabled (or the
+    # license didn't run out) during the delay.
+    if config["active"] and license_active():
 
-        time.sleep(
-            config["delay_ms"] / 1000.0
+        controller.press(
+            config["target_key"]
         )
 
 
-        # Make sure the macro wasn't disabled (or the
-        # license didn't run out) during the delay.
-        if config["active"] and license_active():
+def trigger_up():
 
-            controller.press(
-                config["target_key"]
-            )
+    global is_pressed
+
+
+    if not is_pressed:
+        return
+
+
+    is_pressed = False
+
+    controller.release(
+        config["target_key"]
+    )
+
+
+def on_press(key):
+
+    if config["trigger_source"] != "keyboard":
+        return
+
+    if getattr(key, "char", None) == config["trigger_key"]:
+        trigger_down()
 
 
 def on_release(key):
 
-    global is_pressed
-
-
-    char = getattr(key, "char", None)
-
-    if char is None:
+    if config["trigger_source"] != "keyboard":
         return
 
+    if getattr(key, "char", None) == config["trigger_key"]:
+        trigger_up()
 
-    if char == config["trigger_key"] and is_pressed:
 
-        is_pressed = False
+# =========================================================
+# CONTROLLER LISTENER
+# =========================================================
+#
+# Reads Xbox-style controllers through Windows' XInput, which keeps
+# working while a game has focus (the browser's Gamepad API doesn't).
+# PlayStation controllers show up here through Steam Input or
+# DS4Windows. Names match the dashboard's controller test card.
 
-        controller.release(
-            config["target_key"]
-        )
+PAD_BUTTONS = {
+    "Up": 0x0001,
+    "Down": 0x0002,
+    "Left": 0x0004,
+    "Right": 0x0008,
+    "Menu": 0x0010,
+    "View": 0x0020,
+    "LS": 0x0040,
+    "RS": 0x0080,
+    "LB": 0x0100,
+    "RB": 0x0200,
+    "A": 0x1000,
+    "B": 0x2000,
+    "X": 0x4000,
+    "Y": 0x8000,
+    "LT": None,
+    "RT": None,
+}
+
+PAD_TRIGGER_THRESHOLD = 30
+
+PAD_POLL_SECONDS = 0.004
+
+
+class XInputGamepad(ctypes.Structure):
+
+    _fields_ = [
+        ("wButtons", ctypes.c_ushort),
+        ("bLeftTrigger", ctypes.c_ubyte),
+        ("bRightTrigger", ctypes.c_ubyte),
+        ("sThumbLX", ctypes.c_short),
+        ("sThumbLY", ctypes.c_short),
+        ("sThumbRX", ctypes.c_short),
+        ("sThumbRY", ctypes.c_short),
+    ]
+
+
+class XInputState(ctypes.Structure):
+
+    _fields_ = [
+        ("dwPacketNumber", ctypes.c_uint),
+        ("Gamepad", XInputGamepad),
+    ]
+
+
+def load_xinput():
+
+    if platform.system() != "Windows":
+        return None
+
+    for name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
+
+        try:
+            return ctypes.WinDLL(name)
+        except OSError:
+            continue
+
+    return None
+
+
+xinput = load_xinput()
+
+
+def pad_button_held(pad, name):
+
+    if name == "LT":
+        return pad.bLeftTrigger > PAD_TRIGGER_THRESHOLD
+
+    if name == "RT":
+        return pad.bRightTrigger > PAD_TRIGGER_THRESHOLD
+
+    return bool(pad.wButtons & PAD_BUTTONS[name])
+
+
+def controller_loop():
+
+    # Polls the four XInput slots and fires the macro while the bound
+    # button is held on any controller. Empty slots are slow to query,
+    # so they're only re-checked every couple of seconds.
+    state = XInputState()
+
+    connected = set()
+
+    next_scan = 0.0
+
+    held = False
+
+
+    while True:
+
+        time.sleep(PAD_POLL_SECONDS)
+
+
+        if config["trigger_source"] != "controller":
+
+            if held:
+                held = False
+                trigger_up()
+
+            continue
+
+
+        now = time.monotonic()
+
+        slots = range(4) if now >= next_scan else list(connected)
+
+        if now >= next_scan:
+            next_scan = now + 2.0
+
+
+        name = config["trigger_pad"]
+
+        down = False
+
+        for slot in slots:
+
+            if xinput.XInputGetState(slot, ctypes.byref(state)) != 0:
+                connected.discard(slot)
+                continue
+
+            connected.add(slot)
+
+            if name in PAD_BUTTONS and pad_button_held(state.Gamepad, name):
+                down = True
+
+
+        if down and not held:
+            held = True
+            trigger_down()
+
+        elif held and not down:
+            held = False
+            trigger_up()
 
 
 # =========================================================
@@ -5084,6 +5518,14 @@ if __name__ == "__main__":
         target=license_sync_loop,
         daemon=True
     ).start()
+
+
+    if xinput is not None:
+
+        threading.Thread(
+            target=controller_loop,
+            daemon=True
+        ).start()
 
 
     time.sleep(1)
