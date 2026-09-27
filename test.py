@@ -1491,59 +1491,85 @@ COMMON_CSS = """
     }
 
 
-    .pad-layout {
-        display: flex;
-        gap: 28px;
-        flex-wrap: wrap;
-        align-items: flex-start;
+    .pad-svg {
+        display: block;
+
+        width: 100%;
+        max-width: 520px;
+        margin: 0 auto;
     }
 
 
-    .pad-sticks {
-        display: flex;
-        gap: 22px;
+    .pad-body {
+        fill: rgba(3, 4, 8, 0.55);
+
+        stroke: var(--bolt);
+        stroke-opacity: 0.5;
+        stroke-width: 2;
     }
 
 
-    .pad-stick-wrap {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
+    .pad-part rect,
+    .pad-part circle,
+    .pad-static {
+        fill: rgba(3, 4, 8, 0.85);
+
+        stroke: rgba(150, 180, 215, 0.35);
+        stroke-width: 1.5;
+
+        transition: fill 0.06s, stroke 0.06s;
     }
 
 
-    .pad-stick {
-        position: relative;
+    .pad-part text {
+        fill: var(--text-muted);
 
-        width: 96px;
-        height: 96px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
 
-        background: rgba(3, 4, 8, 0.65);
-        border: 1px solid var(--panel-border);
-        border-radius: 50%;
+        text-anchor: middle;
+        dominant-baseline: central;
+
+        pointer-events: none;
     }
 
 
-    .pad-dot {
-        position: absolute;
-        left: 50%;
-        top: 50%;
+    .pad-face-a text { fill: #4ade80; }
+    .pad-face-b text { fill: #ff4d62; }
+    .pad-face-x text { fill: #5cc8ff; }
+    .pad-face-y text { fill: #f5b942; }
 
-        width: 18px;
-        height: 18px;
-        margin: -9px 0 0 -9px;
 
-        background: var(--bolt);
-        border-radius: 50%;
-
-        box-shadow: 0 0 12px rgba(92, 200, 255, 0.6);
+    .pad-part.pressed rect,
+    .pad-part.pressed circle {
+        fill: rgba(74, 222, 128, 0.28);
+        stroke: #4ade80;
     }
 
 
-    .pad-dot.pressed {
-        background: #4ade80;
-        box-shadow: 0 0 14px rgba(74, 222, 128, 0.8);
+    .pad-part.pressed text {
+        fill: #eafff1;
+    }
+
+
+    .pad-part rect.pad-trigger-fill {
+        fill: rgba(92, 200, 255, 0.4);
+        stroke: none;
+    }
+
+
+    .pad-thumb {
+        fill: var(--bolt);
+
+        filter: drop-shadow(0 0 6px rgba(92, 200, 255, 0.6));
+    }
+
+
+    .pad-thumb.pressed {
+        fill: #4ade80;
+
+        filter: drop-shadow(0 0 7px rgba(74, 222, 128, 0.8));
     }
 
 
@@ -3326,6 +3352,12 @@ const PAD_NAMES = [
 
 let padIndex = null;
 
+let padStandard = true;
+
+// SVG parts by button index for standard controllers; plain chips
+// for controllers the browser can't map to the standard layout.
+let padParts = [];
+
 let padChips = [];
 
 let padPressed = [];
@@ -3338,9 +3370,7 @@ function padButtonName(pad, i) {
 }
 
 
-function buildPadButtons(pad) {
-
-    const box = document.getElementById("padButtons");
+function buildPadChips(pad) {
 
     padChips = pad.buttons.map((_, i) => {
 
@@ -3362,21 +3392,54 @@ function buildPadButtons(pad) {
 
     });
 
-    box.replaceChildren(...padChips);
+    document.getElementById("padButtons").replaceChildren(...padChips);
 
-    padPressed = pad.buttons.map(() => false);
+}
+
+
+function setTriggerFill(i, value) {
+
+    const fill = document.getElementById("padFill" + i);
+
+    // The fill rises from the bottom of the 28-unit-tall trigger.
+    const h = 28 * value;
+
+    fill.setAttribute("height", h);
+
+    fill.setAttribute("y", 40 - h);
 
 }
 
 
 function moveStick(id, x, y, pressed) {
 
-    const dot = document.getElementById(id);
+    const thumb = document.getElementById(id);
 
-    // 39px = stick radius (48) minus the dot radius (9).
-    dot.style.transform = "translate(" + (x * 39) + "px, " + (y * 39) + "px)";
+    // How far the thumb can travel inside its ring.
+    const reach = id === "stickL" ? 14 : 13;
 
-    dot.classList.toggle("pressed", pressed);
+    thumb.setAttribute("transform", "translate(" + (x * reach) + " " + (y * reach) + ")");
+
+    thumb.classList.toggle("pressed", pressed);
+
+}
+
+
+function resetPad() {
+
+    padParts.forEach(part => part.classList.remove("pressed"));
+
+    setTriggerFill(6, 0);
+
+    setTriggerFill(7, 0);
+
+    moveStick("stickL", 0, 0, false);
+
+    moveStick("stickR", 0, 0, false);
+
+    document.getElementById("padButtons").replaceChildren();
+
+    padChips = [];
 
 }
 
@@ -3387,6 +3450,16 @@ function showPadStatus(pad) {
 
     const name = document.getElementById("padName");
 
+    resetPad();
+
+
+    padStandard = !pad || pad.mapping === "standard";
+
+    document.getElementById("padSvg").style.display = padStandard ? "" : "none";
+
+    document.getElementById("padButtons").hidden = padStandard;
+
+
     if (pad) {
 
         status.textContent = "Connected";
@@ -3394,6 +3467,10 @@ function showPadStatus(pad) {
         status.classList.add("on");
 
         name.textContent = pad.id;
+
+        if (!padStandard) buildPadChips(pad);
+
+        padPressed = pad.buttons.map(() => false);
 
     }
 
@@ -3405,14 +3482,6 @@ function showPadStatus(pad) {
 
         name.textContent = "Plug in a controller and press any button on it.";
 
-        document.getElementById("padButtons").replaceChildren();
-
-        padChips = [];
-
-        moveStick("stickL", 0, 0, false);
-
-        moveStick("stickR", 0, 0, false);
-
     }
 
 }
@@ -3422,7 +3491,16 @@ function pollPad() {
 
     requestAnimationFrame(pollPad);
 
-    if (!document.getElementById("padButtons")) return;
+    if (!document.getElementById("padSvg")) return;
+
+
+    if (!padParts.length) {
+
+        document.querySelectorAll("#padSvg [data-btn]").forEach(part => {
+            padParts[Number(part.dataset.btn)] = part;
+        });
+
+    }
 
 
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -3449,8 +3527,6 @@ function pollPad() {
 
         padIndex = pad.index;
 
-        buildPadButtons(pad);
-
         showPadStatus(pad);
 
     }
@@ -3458,14 +3534,20 @@ function pollPad() {
 
     pad.buttons.forEach((button, i) => {
 
-        const chip = padChips[i];
+        const part = padStandard ? padParts[i] : padChips[i];
 
-        if (!chip) return;
+        if (part) {
+            part.classList.toggle("pressed", button.pressed);
+        }
 
-        chip.classList.toggle("pressed", button.pressed);
+        // Triggers are analog: fill them by how far they're pulled.
+        if (padStandard && (i === 6 || i === 7)) {
+            setTriggerFill(i, button.value);
+        }
 
-        // Triggers are analog: fill the chip by how far they're pulled.
-        chip.firstChild.style.height = Math.round(button.value * 100) + "%";
+        else if (!padStandard && part) {
+            part.firstChild.style.height = Math.round(button.value * 100) + "%";
+        }
 
         if (button.pressed && !padPressed[i]) {
             document.getElementById("padLast").textContent = padButtonName(pad, i);
@@ -3474,6 +3556,9 @@ function pollPad() {
         padPressed[i] = button.pressed;
 
     });
+
+
+    if (!padStandard) return;
 
 
     const axis = n => {
@@ -4764,7 +4849,7 @@ def home():
                     <div class="card-header">
 
                         <h2>
-                            Controller Test
+                            Controller
                         </h2>
 
                         <span class="pad-status" id="padStatus">
@@ -4779,25 +4864,73 @@ def home():
                     </div>
 
 
-                    <div class="pad-layout">
+                    <svg class="pad-svg" id="padSvg" viewBox="0 0 440 290" aria-label="Controller">
 
-                        <div class="pad-sticks">
+                        <g class="pad-part" data-btn="6">
+                            <rect x="92" y="10" width="54" height="32" rx="9"/>
+                            <rect class="pad-trigger-fill" id="padFill6" x="94" y="40" width="50" height="0" rx="7"/>
+                            <text x="119" y="26">LT</text>
+                        </g>
 
-                            <div class="pad-stick-wrap">
-                                <div class="pad-stick"><div class="pad-dot" id="stickL"></div></div>
-                                <div class="license-label">Left Stick</div>
-                            </div>
+                        <g class="pad-part" data-btn="7">
+                            <rect x="294" y="10" width="54" height="32" rx="9"/>
+                            <rect class="pad-trigger-fill" id="padFill7" x="296" y="40" width="50" height="0" rx="7"/>
+                            <text x="321" y="26">RT</text>
+                        </g>
 
-                            <div class="pad-stick-wrap">
-                                <div class="pad-stick"><div class="pad-dot" id="stickR"></div></div>
-                                <div class="license-label">Right Stick</div>
-                            </div>
+                        <g class="pad-part" data-btn="4">
+                            <rect x="74" y="48" width="92" height="16" rx="8"/>
+                            <text x="120" y="56">LB</text>
+                        </g>
 
-                        </div>
+                        <g class="pad-part" data-btn="5">
+                            <rect x="274" y="48" width="92" height="16" rx="8"/>
+                            <text x="320" y="56">RB</text>
+                        </g>
 
-                        <div class="pad-buttons" id="padButtons"></div>
+                        <path class="pad-body" d="M 120 70 C 150 58, 290 58, 320 70 C 360 78, 385 100, 398 150 C 412 205, 420 250, 395 268 C 372 284, 345 270, 330 245 C 318 225, 300 212, 280 212 L 160 212 C 140 212, 122 225, 110 245 C 95 270, 68 284, 45 268 C 20 250, 28 205, 42 150 C 55 100, 80 78, 120 70 Z"/>
 
-                    </div>
+                        <g class="pad-part" data-btn="10">
+                            <circle cx="135" cy="125" r="27"/>
+                        </g>
+                        <circle class="pad-thumb" id="stickL" cx="135" cy="125" r="13"/>
+
+                        <g class="pad-part" data-btn="11">
+                            <circle cx="265" cy="180" r="25"/>
+                        </g>
+                        <circle class="pad-thumb" id="stickR" cx="265" cy="180" r="12"/>
+
+                        <rect class="pad-static" x="168" y="173" width="14" height="14"/>
+                        <g class="pad-part" data-btn="12"><rect x="168" y="157" width="14" height="16" rx="3"/></g>
+                        <g class="pad-part" data-btn="13"><rect x="168" y="187" width="14" height="16" rx="3"/></g>
+                        <g class="pad-part" data-btn="14"><rect x="152" y="173" width="16" height="14" rx="3"/></g>
+                        <g class="pad-part" data-btn="15"><rect x="182" y="173" width="16" height="14" rx="3"/></g>
+
+                        <g class="pad-part" data-btn="8"><rect x="184" y="120" width="20" height="11" rx="5.5"/></g>
+                        <g class="pad-part" data-btn="9"><rect x="236" y="120" width="20" height="11" rx="5.5"/></g>
+                        <g class="pad-part" data-btn="16"><circle cx="220" cy="92" r="12"/></g>
+
+                        <g class="pad-part pad-face-y" data-btn="3">
+                            <circle cx="305" cy="100" r="12"/>
+                            <text x="305" y="100">Y</text>
+                        </g>
+                        <g class="pad-part pad-face-x" data-btn="2">
+                            <circle cx="280" cy="125" r="12"/>
+                            <text x="280" y="125">X</text>
+                        </g>
+                        <g class="pad-part pad-face-b" data-btn="1">
+                            <circle cx="330" cy="125" r="12"/>
+                            <text x="330" y="125">B</text>
+                        </g>
+                        <g class="pad-part pad-face-a" data-btn="0">
+                            <circle cx="305" cy="150" r="12"/>
+                            <text x="305" y="150">A</text>
+                        </g>
+
+                    </svg>
+
+
+                    <div class="pad-buttons" id="padButtons" hidden></div>
 
 
                     <div class="pad-last">
