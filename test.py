@@ -63,7 +63,7 @@ press_lock = threading.Lock()
 LICENSE_SERVER = (
     os.environ.get("AMOS_LICENSE_SERVER")
     or os.environ.get("YAKUZA_LICENSE_SERVER")
-    or "http://170.64.171.207"
+    or "https://api.amos.fyi"
 ).rstrip("/")
 
 LICENSE_SYNC_SECONDS = 60
@@ -288,7 +288,12 @@ def license_request(path, payload):
     req = urllib.request.Request(
         LICENSE_SERVER + path,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # Cloudflare's bot protection blocks Python's default
+            # "Python-urllib" user agent.
+            "User-Agent": "AmosSolutions/1.0 (+https://amos.fyi)",
+        },
         method="POST"
     )
 

@@ -45,9 +45,22 @@ In production put the server behind HTTPS (e.g. a reverse proxy).
 
 ## 2. Point the app at your server
 
-Edit `LICENSE_SERVER` near the top of `test.py`, or set the
-`AMOS_LICENSE_SERVER` environment variable, e.g.
-`https://license.example.com`.
+The app talks to `https://api.amos.fyi`. To use another address, edit
+`LICENSE_SERVER` near the top of `test.py` or set the
+`AMOS_LICENSE_SERVER` environment variable.
+
+### HTTPS with Cloudflare
+
+1. In Cloudflare DNS, add an `A` record `api` pointing at the server's
+   IP, with the proxy (orange cloud) on.
+2. In SSL/TLS, set the mode to **Full (strict)**, then create an
+   **Origin Certificate** for `amos.fyi` and `*.amos.fyi`. Save the
+   certificate as `/etc/ssl/amos/origin.pem` and the key as
+   `/etc/ssl/amos/origin.key` on the server.
+3. Copy `deploy/nginx-amos-api.conf` to `/etc/nginx/conf.d/`, then run
+   `nginx -t && systemctl reload nginx`. Open port 443 in the firewall.
+4. Check it: `curl -X POST https://api.amos.fyi/api/integrity -d '{}'`
+   should answer with JSON from the license server.
 
 ## 3. Sell keys
 
