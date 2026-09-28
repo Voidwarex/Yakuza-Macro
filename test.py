@@ -154,9 +154,14 @@ def get_hwid():
 def app_file():
 
     # The file actually running: the .exe when packaged with
-    # PyInstaller, otherwise this script.
+    # PyInstaller or compiled with Nuitka, otherwise this script.
     if getattr(sys, "frozen", False):
         return sys.executable
+
+    # Nuitka: __file__ points into the build, not at a real file;
+    # sys.argv[0] is the .exe the user launched.
+    if "__compiled__" in globals():
+        return os.path.abspath(sys.argv[0])
 
     return os.path.abspath(__file__)
 

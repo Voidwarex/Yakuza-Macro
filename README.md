@@ -155,6 +155,36 @@ This stops people editing the script and logging in with it. It can't
 stop someone determined, because the app itself works out the hash it
 sends, so a cracked copy could send an approved hash instead.
 
+## Building the .exe
+
+Customers should get a compiled `AmosSolutions.exe`, not `test.py`.
+`build.bat` compiles the app with [Nuitka](https://nuitka.net), which
+turns the Python into C and then into a native Windows program, so the
+source code isn't inside the file.
+
+On a Windows PC with Python 3.11 or 3.12 installed, in this folder:
+
+```
+build.bat
+```
+
+The first build asks to download a C compiler (MinGW64); say yes. A
+build takes several minutes. It ends by printing the new `.exe`'s
+SHA-256, which you then approve on the server:
+
+```
+python license_server.py approvebuild <hash> --label v1.0.0
+```
+
+Every build has a different hash, so approve each one you hand out.
+The build check then covers the `.exe` itself: an edited or patched
+copy is refused at sign-in.
+
+The `.exe` isn't code-signed, so Windows SmartScreen shows "Windows
+protected your PC" the first time (More info → Run anyway), and some
+antivirus programs are wary of new unsigned programs that read the
+keyboard. A code-signing certificate removes most of that.
+
 ## Admin Panel
 
 Admin accounts see an **Admin Panel** in the app's side menu with every
