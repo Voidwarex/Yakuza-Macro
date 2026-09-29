@@ -1,0 +1,217 @@
+<!--
+Product image template for Amos Solutions license keys (1024 x 1024).
+
+Open with ?plan=day, ?plan=week or ?plan=month and screenshot the
+#art element at 1024 x 1024. The ring has one tick per hour (day),
+day (week) or day (month).
+-->
+<meta charset="utf-8">
+<title>Amos Key Art</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oxanium:wght@600;800&family=JetBrains+Mono:wght@500;700&display=swap">
+
+<style>
+    :root {
+        --night: #07090d;
+        --accent: #5cc8ff;
+        --accent-soft: rgba(92, 200, 255, 0.35);
+        --bright: #cfeeff;
+    }
+
+    html, body { margin: 0; background: #000; }
+
+    #art {
+        position: relative;
+        width: 1024px;
+        height: 1024px;
+        overflow: hidden;
+        background:
+            radial-gradient(520px 460px at 50% 42%, var(--accent-soft), transparent 70%),
+            radial-gradient(900px 600px at 50% 110%, rgba(129, 147, 255, 0.10), transparent 70%),
+            var(--night);
+        font-family: "Oxanium", "DejaVu Sans", sans-serif;
+        color: #e6edf6;
+    }
+
+    /* Rain */
+    #art::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image: repeating-linear-gradient(104deg, transparent 0 38px, rgba(170, 210, 245, 0.06) 38px 39px);
+    }
+
+    /* Frame */
+    #art::after {
+        content: "";
+        position: absolute;
+        inset: 22px;
+        border: 1px solid rgba(150, 180, 215, 0.14);
+        border-radius: 36px;
+    }
+
+    svg.scene { position: absolute; inset: 0; }
+
+    .brand {
+        position: absolute;
+        top: 58px;
+        left: 64px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-weight: 800;
+        font-size: 34px;
+        letter-spacing: 0.16em;
+    }
+
+    .brand svg { filter: drop-shadow(0 0 10px var(--accent)); }
+
+    .product {
+        position: absolute;
+        top: 66px;
+        right: 64px;
+        font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+        font-weight: 700;
+        font-size: 22px;
+        letter-spacing: 0.18em;
+        color: var(--accent);
+    }
+
+    .title {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 744px;
+        text-align: center;
+        font-weight: 800;
+        font-size: 150px;
+        line-height: 1;
+        letter-spacing: 0.04em;
+        text-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+    }
+
+    .title b {
+        color: var(--accent);
+        text-shadow: 0 0 36px var(--accent);
+    }
+
+    .code {
+        position: absolute;
+        left: 50%;
+        top: 912px;
+        transform: translateX(-50%);
+        padding: 14px 30px;
+        border: 2px dashed rgba(150, 180, 215, 0.35);
+        border-radius: 14px;
+        font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+        font-weight: 500;
+        font-size: 28px;
+        letter-spacing: 0.08em;
+        color: #9aa7b8;
+        white-space: nowrap;
+        background: rgba(7, 9, 13, 0.6);
+    }
+
+    .code span { color: var(--bright); font-weight: 700; }
+</style>
+
+<div id="art">
+
+    <svg class="scene" viewBox="0 0 1024 1024" width="1024" height="1024" aria-hidden="true">
+        <defs>
+            <linearGradient id="capTop" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#1b2433"></stop>
+                <stop offset="1" stop-color="#0c1119"></stop>
+            </linearGradient>
+            <linearGradient id="capSide" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#0a0e15"></stop>
+                <stop offset="1" stop-color="#05070a"></stop>
+            </linearGradient>
+            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="10" result="b"></feGaussianBlur>
+                <feMerge><feMergeNode in="b"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+            </filter>
+            <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="22"></feGaussianBlur>
+            </filter>
+        </defs>
+
+        <!-- Hour / day ring -->
+        <g id="ring" transform="translate(512 430)"></g>
+
+        <!-- Keycap -->
+        <g transform="translate(512 430)">
+            <rect x="-150" y="-128" width="300" height="300" rx="52" fill="var(--accent)" opacity="0.35" filter="url(#softGlow)"></rect>
+            <rect x="-150" y="-128" width="300" height="300" rx="52" fill="url(#capSide)" stroke="var(--accent)" stroke-opacity="0.45" stroke-width="2"></rect>
+            <rect x="-150" y="-152" width="300" height="290" rx="52" fill="url(#capTop)" stroke="var(--accent)" stroke-width="3"></rect>
+            <rect x="-118" y="-124" width="236" height="220" rx="36" fill="none" stroke="rgba(207,238,255,0.10)" stroke-width="2"></rect>
+
+            <!-- Bolt -->
+            <g filter="url(#glow)" transform="translate(-78 -110) scale(6.6)">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="rgba(92,200,255,0.12)" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"></polygon>
+            </g>
+        </g>
+    </svg>
+
+    <div class="brand">
+        <svg width="40" height="40" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linejoin="round"></polygon></svg>
+        AMOS
+    </div>
+
+    <div class="product">AUTO BUILDER</div>
+
+    <div class="title" id="title"><b>1</b> DAY</div>
+
+    <div class="code" id="code"><span>DAY</span>-XXXX-XXXX-XXXX-XXXX</div>
+
+</div>
+
+<script>
+const PLANS = {
+    day:   { n: "1",  unit: "DAY",  prefix: "DAY",   ticks: 24, accent: "#5cc8ff", soft: "rgba(92,200,255,0.34)",  bright: "#cfeeff" },
+    week:  { n: "7",  unit: "DAYS", prefix: "WEEK",  ticks: 7,  accent: "#8f9bff", soft: "rgba(129,147,255,0.36)", bright: "#e1e5ff" },
+    month: { n: "30", unit: "DAYS", prefix: "MONTH", ticks: 30, accent: "#f5b942", soft: "rgba(245,185,66,0.30)",  bright: "#ffeec8" },
+};
+
+const plan = PLANS[new URLSearchParams(location.search).get("plan")] || PLANS.day;
+
+const root = document.documentElement.style;
+root.setProperty("--accent", plan.accent);
+root.setProperty("--accent-soft", plan.soft);
+root.setProperty("--bright", plan.bright);
+
+document.getElementById("title").innerHTML = "<b>" + plan.n + "</b> " + plan.unit;
+document.getElementById("code").innerHTML = "<span>" + plan.prefix + "</span>-XXXX-XXXX-XXXX-XXXX";
+
+
+// Ring: a faint full circle, a glowing arc, and one tick per unit.
+const NS = "http://www.w3.org/2000/svg";
+const ring = document.getElementById("ring");
+
+function add(tag, attrs) {
+    const el = document.createElementNS(NS, tag);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    ring.appendChild(el);
+    return el;
+}
+
+const R = 262;
+
+add("circle", { r: R, fill: "none", stroke: "rgba(150,180,215,0.14)", "stroke-width": 2 });
+add("circle", { r: R, fill: "none", stroke: plan.accent, "stroke-width": 5, "stroke-linecap": "round",
+    "stroke-dasharray": (2 * Math.PI * R * 0.86) + " 9999", transform: "rotate(-90)", filter: "url(#glow)", opacity: 0.95 });
+
+for (let i = 0; i < plan.ticks; i++) {
+
+    const a = (i / plan.ticks) * Math.PI * 2 - Math.PI / 2;
+    const major = plan.ticks === 24 ? i % 6 === 0 : true;
+    const r1 = R + 18, r2 = R + (major ? 44 : 32);
+
+    add("line", {
+        x1: Math.cos(a) * r1, y1: Math.sin(a) * r1,
+        x2: Math.cos(a) * r2, y2: Math.sin(a) * r2,
+        stroke: major ? plan.accent : "rgba(150,180,215,0.45)",
+        "stroke-width": major ? 5 : 3,
+        "stroke-linecap": "round",
+    });
+}
+</script>

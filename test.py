@@ -5,7 +5,14 @@ import platform
 import subprocess
 import uuid
 import urllib.request
+import urllib.error
+import json
+import hashlib
+import ctypes
 import os
+import socket
+import sys
+import tempfile
 
 from flask import Flask, request, jsonify
 from pynput import keyboard
@@ -18,13 +25,75 @@ from pynput import keyboard
 config = {
     "delay_ms": 10,
     "trigger_key": "e",
+
+    # "keyboard" uses trigger_key; "controller" uses trigger_pad,
+    # a controller button name such as "RB" (see PAD_BUTTONS).
+    "trigger_source": "keyboard",
+    "trigger_pad": "RB",
+
+    # In controller mode the target is a button on a virtual
+    # controller instead of target_key.
+    "target_pad": "A",
     "target_key": "p",
     "active": True,
+
+    "auto_build_active": False,
+    "auto_build_key": "f",
+    "auto_build_delay_ms": 10,
 }
 
 
 controller = keyboard.Controller()
 is_pressed = False
+
+# What the macro is holding down right now, e.g. ("key", "p") or
+# ("pad", "A"), so it's released even if the binding changes.
+held_output = None
+
+press_lock = threading.Lock()
+
+
+# =========================================================
+# LICENSE
+# =========================================================
+
+# Address of license_server.py. Point this at your hosted server
+# (use https:// in production) or set AMOS_LICENSE_SERVER.
+# YAKUZA_LICENSE_SERVER, from before the rename, still works.
+LICENSE_SERVER = (
+    os.environ.get("AMOS_LICENSE_SERVER")
+    or os.environ.get("YAKUZA_LICENSE_SERVER")
+    or "https://api.amos.fyi"
+).rstrip("/")
+
+LICENSE_SYNC_SECONDS = 60
+
+
+# remaining is counted down from synced_at with a monotonic
+# clock, so changing the PC clock can't add time.
+license_state = {
+    "token": None,
+    "username": None,
+    "remaining": 0.0,
+    "synced_at": 0.0,
+    "is_admin": False,
+
+    # Free-time event info from the server, counted down from
+    # synced_at like remaining.
+    "event": None,
+    "next_event": None,
+}
+
+license_lock = threading.Lock()
+
+
+# Set when the license server says this copy of the app isn't an
+# approved build. The login screen shows it and stays locked.
+integrity_state = {
+    "checked": False,
+    "message": None,
+    "enforced": False,
+}
 
 
 # =========================================================
@@ -82,29 +151,370 @@ def get_hwid():
     return str(uuid.getnode())
 
 
+def app_file():
+
+    # The file actually running: the .exe when packaged with
+    # PyInstaller or compiled with Nuitka, otherwise this script.
+    if getattr(sys, "frozen", False):
+        return sys.executable
+
+    # Nuitka: __file__ points into the build, not at a real file;
+    # sys.argv[0] is the .exe the user launched.
+    if "__compiled__" in globals():
+        return os.path.abspath(sys.argv[0])
+
+    return os.path.abspath(__file__)
+
+
+def compute_app_hash():
+
+    # Must match file_hash() in license_server.py: scripts are hashed
+    # with LF line endings so a CRLF checkout gets the same hash.
+    path = app_file()
+
+    with open(path, "rb") as f:
+        content = f.read()
+
+    if path.lower().endswith(".py"):
+        content = content.replace(b"\r\n", b"\n")
+
+    return hashlib.sha256(content).hexdigest()
+
+
+_app_hash_cache = None
+
+
+def app_hash():
+
+    global _app_hash_cache
+
+    if _app_hash_cache is None:
+        _app_hash_cache = compute_app_hash()
+
+    return _app_hash_cache
+
+
+_hwid_cache = None
+
+
+def cached_hwid():
+
+    global _hwid_cache
+
+    if _hwid_cache is None:
+        _hwid_cache = get_hwid()
+
+    return _hwid_cache
+
+
+# =========================================================
+# BACKGROUND MODE
+# =========================================================
+
+APP_PORT = 5000
+
+APP_URL = f"http://127.0.0.1:{APP_PORT}"
+
+
+def relaunch_without_console():
+
+    # On Windows, python.exe always opens a console window. Restart
+    # under pythonw.exe (no window) and let this copy exit, which
+    # closes the console. Run with --console to keep it for debugging.
+    if platform.system() != "Windows" or getattr(sys, "frozen", False):
+        return
+
+    if "--console" in sys.argv:
+        return
+
+
+    exe = os.path.basename(sys.executable).lower()
+
+    if not exe.startswith("python") or exe.startswith("pythonw"):
+        return
+
+
+    pythonw = os.path.join(
+        os.path.dirname(sys.executable),
+        exe.replace("python", "pythonw", 1)
+    )
+
+    if not os.path.exists(pythonw):
+        return
+
+
+    subprocess.Popen(
+        [pythonw, os.path.abspath(__file__), *sys.argv[1:]],
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        close_fds=True
+    )
+
+    sys.exit(0)
+
+
+def redirect_output_to_log():
+
+    # pythonw has no console, so print() and errors would vanish.
+    # Send them to a log file instead so problems can be diagnosed.
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    log = open(
+        os.path.join(tempfile.gettempdir(), "amos.log"),
+        "a",
+        buffering=1,
+        encoding="utf8"
+    )
+
+    sys.stdout = sys.stdout or log
+    sys.stderr = sys.stderr or log
+
+
+def app_already_running():
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+
+        s.settimeout(0.5)
+
+        return s.connect_ex(("127.0.0.1", APP_PORT)) == 0
+
+
+# =========================================================
+# LICENSE CLIENT
+# =========================================================
+
+def license_request(path, payload):
+
+    # Returns (response_json, error_message, http_status).
+    body = json.dumps(
+        {**payload, "hwid": cached_hwid(), "app_hash": app_hash()}
+    ).encode("utf8")
+
+    req = urllib.request.Request(
+        LICENSE_SERVER + path,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            # Cloudflare's bot protection blocks Python's default
+            # "Python-urllib" user agent.
+            "User-Agent": "AmosSolutions/1.0 (+https://amos.fyi)",
+        },
+        method="POST"
+    )
+
+    try:
+
+        with urllib.request.urlopen(req, timeout=6) as res:
+            return json.loads(res.read().decode("utf8")), None, res.status
+
+    except urllib.error.HTTPError as e:
+
+        try:
+            body = json.loads(e.read().decode("utf8"))
+        except Exception:
+            body = {}
+
+        message = body.get("error") or f"License server error ({e.code})."
+
+        if body.get("modified"):
+            integrity_state["checked"] = True
+            integrity_state["message"] = message
+
+        return None, message, e.code
+
+    except Exception:
+
+        return None, "Can't reach the license server. Check your connection.", 0
+
+
+def apply_license(data, token=None):
+
+    with license_lock:
+
+        if token is not None:
+            license_state["token"] = token
+
+        license_state["username"] = data.get(
+            "username", license_state["username"]
+        )
+
+        license_state["remaining"] = float(
+            data.get("remaining_seconds", 0)
+        )
+
+        license_state["synced_at"] = time.monotonic()
+
+        license_state["event"] = data.get("event")
+
+        license_state["next_event"] = data.get("next_event")
+
+        if "is_admin" in data:
+            license_state["is_admin"] = bool(data["is_admin"])
+
+
+def clear_license():
+
+    with license_lock:
+
+        license_state["token"] = None
+        license_state["username"] = None
+        license_state["remaining"] = 0.0
+        license_state["is_admin"] = False
+        license_state["event"] = None
+        license_state["next_event"] = None
+
+
+def logged_in():
+
+    return license_state["token"] is not None
+
+
+def remaining_seconds():
+
+    with license_lock:
+
+        if license_state["token"] is None:
+            return 0.0
+
+        elapsed = time.monotonic() - license_state["synced_at"]
+
+        return max(0.0, license_state["remaining"] - elapsed)
+
+
+def license_active():
+
+    return remaining_seconds() > 0
+
+
+def event_info():
+
+    # The running and next free-time events, with their countdowns
+    # brought up to date, for the dashboard.
+    with license_lock:
+
+        elapsed = time.monotonic() - license_state["synced_at"]
+
+        event = license_state["event"]
+
+        upcoming = license_state["next_event"]
+
+
+    return {
+        "event": {
+            "name": event["name"],
+            "remaining_seconds": max(0.0, event["remaining_seconds"] - elapsed),
+        } if event else None,
+
+        "next_event": {
+            "name": upcoming["name"],
+            "starts_in": max(0.0, upcoming["starts_in"] - elapsed),
+            "hours": upcoming.get("hours"),
+        } if upcoming else None,
+    }
+
+
+def check_integrity():
+
+    # Asks the license server whether this build is approved. Returns
+    # the error message if it isn't, else None. If the server can't
+    # be reached it's asked again next time; login fails anyway.
+    if not integrity_state["checked"]:
+
+        data, err, status = license_request("/api/integrity", {})
+
+        if data:
+            integrity_state["checked"] = True
+            integrity_state["message"] = None
+            integrity_state["enforced"] = bool(data.get("enforced"))
+
+    return integrity_state["message"]
+
+
+def build_status():
+
+    # (text, css class) describing the build check, for the login
+    # screen and System Information.
+    check_integrity()
+
+    if integrity_state["message"]:
+        return "Modified or out of date", "err"
+
+    if not integrity_state["checked"]:
+        return "Not verified (can't reach the license server)", "warn"
+
+    if integrity_state["enforced"]:
+        return "Verified \u2713 approved build", "ok"
+
+    return "Not checked (no approved builds on the server)", "warn"
+
+
+def license_sync_loop():
+
+    # Re-check the license with the server so redeemed or
+    # revoked time shows up without restarting.
+    while True:
+
+        time.sleep(LICENSE_SYNC_SECONDS)
+
+        token = license_state["token"]
+
+        if token is None:
+            continue
+
+        data, err, status = license_request(
+            "/api/status", {"token": token}
+        )
+
+        if data:
+            apply_license(data)
+
+        elif status in (401, 403):
+            clear_license()
+
+
 # =========================================================
 # CSS
 # =========================================================
 
 COMMON_CSS = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link
+    href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+    rel="stylesheet"
+>
+
 <style>
 
     :root {
-        --bg: #09090b;
-        --card-bg: #18181b;
-        --card-border: #27272a;
+        --bg: #06080d;
+        --bg-deep: #030408;
+        --panel: rgba(15, 20, 30, 0.72);
+        --panel-solid: #0b0f17;
+        --panel-border: rgba(150, 180, 215, 0.12);
+        --panel-border-strong: rgba(150, 180, 215, 0.24);
 
-        --text-primary: #f4f4f5;
-        --text-muted: #a1a1aa;
+        --text-primary: #e4ebf5;
+        --text-muted: #7b879a;
 
-        --accent-green: #22c55e;
-        --accent-green-hover: #16a34a;
+        --bolt: #5cc8ff;
+        --bolt-bright: #cfeeff;
+        --storm-violet: #8193ff;
+        --on: #5cc8ff;
+        --off: #ff4d62;
 
-        --accent-red: #7f1d1d;
-        --accent-red-text: #991b1b;
+        --glow-bolt:
+            0 0 6px rgba(92, 200, 255, 0.7),
+            0 0 20px rgba(92, 200, 255, 0.3);
+
+        --font-display: "Oxanium", "Segoe UI", sans-serif;
+        --font-body: "Barlow", "Segoe UI", Roboto, sans-serif;
+        --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+        --radius: 12px;
 
         --sidebar-width: 260px;
-        --sidebar-collapsed-width: 72px;
+        --sidebar-collapsed-width: 76px;
     }
 
 
@@ -115,24 +525,75 @@ COMMON_CSS = """
     }
 
 
+    ::selection {
+        background: var(--bolt);
+        color: var(--bg);
+    }
+
+
+    ::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: var(--bg-deep);
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: #243042;
+        border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--bolt);
+    }
+
+
     body {
-        font-family:
-            -apple-system,
-            BlinkMacSystemFont,
-            "Segoe UI",
-            Roboto,
-            "Helvetica Neue",
-            Arial,
-            sans-serif;
+        font-family: var(--font-body);
+        font-size: 16px;
+        font-weight: 500;
 
         background: var(--bg);
         color: var(--text-primary);
 
         display: flex;
-
         height: 100vh;
-
         overflow: hidden;
+
+        position: relative;
+    }
+
+
+    /* Lightning flash overlay */
+
+    body::after {
+        content: "";
+
+        position: fixed;
+        inset: 0;
+
+        pointer-events: none;
+        z-index: 100;
+
+        background:
+            radial-gradient(ellipse at 70% 0%, rgba(200, 230, 255, 0.55), transparent 60%);
+
+        opacity: 0;
+
+        animation: lightning 11s infinite;
+    }
+
+
+    @keyframes lightning {
+        0%, 88%, 100% { opacity: 0; }
+        88.5% { opacity: 0.55; }
+        89%   { opacity: 0.05; }
+        89.6% { opacity: 0.8; }
+        90.4% { opacity: 0; }
+        93%   { opacity: 0; }
+        93.3% { opacity: 0.25; }
+        93.8% { opacity: 0; }
     }
 
 
@@ -143,17 +604,24 @@ COMMON_CSS = """
     .sidebar {
         width: var(--sidebar-width);
 
-        background: var(--card-bg);
+        background:
+            linear-gradient(180deg, rgba(92, 200, 255, 0.05), transparent 30%),
+            rgba(9, 12, 19, 0.92);
 
-        border-right: 1px solid var(--card-border);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
 
-        transition:
-            width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border-right: 1px solid var(--panel-border);
+
+        box-shadow: 10px 0 40px rgba(0, 0, 0, 0.55);
+
+        transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
         display: flex;
         flex-direction: column;
 
         z-index: 10;
+        position: relative;
     }
 
 
@@ -163,14 +631,14 @@ COMMON_CSS = """
 
 
     .sidebar-header {
-        height: 72px;
+        height: 76px;
 
         display: flex;
         align-items: center;
 
         padding: 0 24px;
 
-        border-bottom: 1px solid var(--card-border);
+        border-bottom: 1px solid var(--panel-border);
 
         overflow: hidden;
         white-space: nowrap;
@@ -180,14 +648,15 @@ COMMON_CSS = """
     .sidebar-logo {
         display: flex;
         align-items: center;
-
         gap: 12px;
 
-        font-weight: 700;
-        font-size: 1.2rem;
+        font-family: var(--font-display);
+        font-weight: 800;
+        font-size: 1.05rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
 
         color: var(--text-primary);
-
         text-decoration: none;
     }
 
@@ -195,7 +664,17 @@ COMMON_CSS = """
     .sidebar-logo svg {
         flex-shrink: 0;
 
-        color: var(--accent-green);
+        color: var(--bolt);
+
+        filter: drop-shadow(0 0 6px rgba(92, 200, 255, 0.7));
+
+        animation: boltFlicker 11s infinite;
+    }
+
+
+    @keyframes boltFlicker {
+        0%, 88%, 91%, 100% { color: var(--bolt); filter: drop-shadow(0 0 6px rgba(92, 200, 255, 0.7)); }
+        88.5%, 89.6% { color: #ffffff; filter: drop-shadow(0 0 14px rgba(207, 238, 255, 1)); }
     }
 
 
@@ -206,47 +685,81 @@ COMMON_CSS = """
 
         display: flex;
         flex-direction: column;
-
-        gap: 8px;
+        gap: 6px;
     }
 
 
     .nav-item {
+        position: relative;
+
         display: flex;
         align-items: center;
-
         gap: 16px;
 
-        padding: 12px;
+        padding: 12px 14px;
 
-        border-radius: 8px;
+        border-radius: 10px;
 
         color: var(--text-muted);
-
         text-decoration: none;
 
-        font-weight: 500;
+        font-family: var(--font-display);
+        font-weight: 600;
+        font-size: 0.9rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
 
-        transition: all 0.2s;
+        border: 1px solid transparent;
+
+        transition: all 0.2s ease;
 
         cursor: pointer;
-
         overflow: hidden;
         white-space: nowrap;
     }
 
 
-    .nav-item:hover {
-        background: rgba(255, 255, 255, 0.05);
+    .nav-item::before {
+        content: "";
 
+        position: absolute;
+        left: 0;
+        top: 22%;
+        bottom: 22%;
+
+        width: 3px;
+        border-radius: 0 3px 3px 0;
+
+        background: var(--bolt);
+        box-shadow: var(--glow-bolt);
+
+        transform: scaleY(0);
+        transition: transform 0.2s ease;
+    }
+
+
+    .nav-item:hover {
+        background: rgba(150, 180, 215, 0.06);
         color: var(--text-primary);
     }
 
 
     .nav-item.active {
-        background: rgba(34, 197, 94, 0.1);
+        background: linear-gradient(90deg, rgba(92, 200, 255, 0.14), rgba(92, 200, 255, 0.02));
+        border-color: rgba(92, 200, 255, 0.18);
 
-        color: var(--accent-green);
+        color: var(--bolt-bright);
+    }
+
+
+    .nav-item.active::before {
+        transform: scaleY(1);
+    }
+
+
+    .nav-item.active svg {
+        color: var(--bolt);
+        filter: drop-shadow(0 0 5px rgba(92, 200, 255, 0.8));
     }
 
 
@@ -258,16 +771,30 @@ COMMON_CSS = """
     .logout-btn {
         margin-top: auto;
 
-        color: #ef4444;
+        color: #c46a76;
+    }
 
+
+    .exit-btn {
+        margin-top: 0;
         margin-bottom: 16px;
     }
 
 
-    .logout-btn:hover {
-        background: rgba(239, 68, 68, 0.1);
+    .auth-exit {
+        margin-top: 14px;
+    }
 
-        color: #dc2626;
+
+    .logout-btn::before {
+        background: var(--off);
+        box-shadow: 0 0 8px var(--off);
+    }
+
+
+    .logout-btn:hover {
+        background: rgba(255, 77, 98, 0.08);
+        color: var(--off);
     }
 
 
@@ -278,14 +805,12 @@ COMMON_CSS = """
 
     .sidebar.collapsed span {
         opacity: 0;
-
         pointer-events: none;
     }
 
 
     .sidebar.collapsed .sidebar-header {
         justify-content: center;
-
         padding: 0;
     }
 
@@ -300,14 +825,82 @@ COMMON_CSS = """
         display: flex;
         flex-direction: column;
 
+        position: relative;
+        overflow: hidden;
+
+        background:
+            linear-gradient(180deg, #0c121c 0%, #080b12 45%, #05070b 100%);
+    }
+
+
+    /* Drifting storm clouds */
+
+    .main-wrapper::before {
+        content: "";
+
+        position: absolute;
+        inset: -20% -40%;
+
+        background:
+            radial-gradient(ellipse 40% 22% at 20% 12%, rgba(85, 105, 135, 0.7), transparent 70%),
+            radial-gradient(ellipse 35% 20% at 55% 6%, rgba(70, 88, 115, 0.75), transparent 70%),
+            radial-gradient(ellipse 45% 25% at 85% 16%, rgba(80, 98, 130, 0.65), transparent 70%),
+            radial-gradient(ellipse 30% 18% at 40% 26%, rgba(50, 64, 88, 0.7), transparent 70%),
+            radial-gradient(ellipse 38% 16% at 75% 32%, rgba(45, 58, 80, 0.55), transparent 70%),
+            radial-gradient(ellipse 50% 30% at 70% 90%, rgba(92, 200, 255, 0.05), transparent 70%);
+
+        filter: blur(18px);
+
+        animation: cloudDrift 60s ease-in-out infinite alternate;
+
+        pointer-events: none;
+        z-index: 0;
+    }
+
+
+    @keyframes cloudDrift {
+        from { transform: translateX(-6%); }
+        to   { transform: translateX(6%); }
+    }
+
+
+    /* Rain */
+
+    .main-wrapper::after {
+        content: "";
+
+        position: absolute;
+        inset: -100px 0 0 0;
+
         background-image:
-            radial-gradient(
-                circle at 50% 35%,
-                rgba(34, 197, 94, 0.08) 0%,
-                rgba(9, 9, 11, 1) 70%
+            repeating-linear-gradient(
+                104deg,
+                transparent 0px,
+                transparent 38px,
+                rgba(170, 200, 235, 0.07) 38px,
+                rgba(170, 200, 235, 0.07) 39px
+            ),
+            repeating-linear-gradient(
+                104deg,
+                transparent 0px,
+                transparent 71px,
+                rgba(170, 200, 235, 0.05) 71px,
+                rgba(170, 200, 235, 0.05) 72px
             );
 
-        position: relative;
+        mask-image: repeating-linear-gradient(to bottom, black 0 22px, transparent 22px 60px);
+        -webkit-mask-image: repeating-linear-gradient(to bottom, black 0 22px, transparent 22px 60px);
+
+        animation: rain 0.55s linear infinite;
+
+        pointer-events: none;
+        z-index: 0;
+    }
+
+
+    @keyframes rain {
+        from { transform: translate(0, 0); }
+        to   { transform: translate(-14px, 60px); }
     }
 
 
@@ -316,94 +909,101 @@ COMMON_CSS = """
        ===================================================== */
 
     .topbar {
-        height: 72px;
+        height: 76px;
 
         display: flex;
         align-items: center;
 
         padding: 0 32px;
 
-        border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+        position: relative;
+        z-index: 2;
+
+        background: rgba(6, 8, 13, 0.5);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+
+        border-bottom: 1px solid var(--panel-border);
     }
 
 
     .topbar-left {
         display: flex;
-
         align-items: center;
-
         gap: 18px;
     }
 
 
     .menu-toggle {
-        background: none;
-
-        border: none;
+        background: rgba(150, 180, 215, 0.05);
+        border: 1px solid var(--panel-border);
 
         color: var(--text-primary);
 
         cursor: pointer;
-
         padding: 8px;
-
-        border-radius: 6px;
+        border-radius: 10px;
 
         display: flex;
-
         align-items: center;
 
-        transition: background 0.2s;
+        transition: all 0.2s;
     }
 
 
     .menu-toggle:hover {
-        background: rgba(255,255,255,0.05);
+        border-color: rgba(92, 200, 255, 0.5);
+        color: var(--bolt);
+        box-shadow: 0 0 14px rgba(92, 200, 255, 0.2);
     }
 
 
     .brand-title {
-        font-size: 1.25rem;
-
-        font-weight: 700;
-
-        letter-spacing: -0.02em;
-
+        font-family: var(--font-display);
+        font-size: 1.35rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
         white-space: nowrap;
+
+        background: linear-gradient(180deg, #ffffff 0%, #b9c8dc 55%, #6f8199 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
     }
 
 
     /* =====================================================
-       HEADER STATUS
+       CARD TOGGLE / STATUS
        ===================================================== */
 
-    .header-status {
+    .card-toggle {
         display: flex;
-
         align-items: center;
-
         gap: 10px;
 
-        margin-left: 4px;
+        flex-shrink: 0;
+        padding: 0 10px;
 
-        padding-left: 14px;
+        height: 36px;
 
-        border-left: 1px solid var(--card-border);
-
-        height: 32px;
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.3);
     }
 
 
-    .header-status .switch {
+    .card-toggle .switch {
         flex-shrink: 0;
     }
 
 
     .status-text {
-        font-size: 0.82rem;
-
+        font-family: var(--font-display);
+        font-size: 0.7rem;
         font-weight: 700;
-
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
         white-space: nowrap;
 
         transition:
@@ -412,47 +1012,23 @@ COMMON_CSS = """
     }
 
 
-    /* ENABLED */
-
     .status-text.enabled {
-        color: var(--accent-green);
+        color: var(--on);
 
-        text-shadow:
-            0 0 6px rgba(34, 197, 94, 0.8),
-            0 0 14px rgba(34, 197, 94, 0.5);
+        text-shadow: 0 0 10px rgba(92, 200, 255, 0.6);
 
-        animation: statusPulse 1.8s ease-in-out infinite;
+        animation: statusPulse 2.2s ease-in-out infinite;
     }
 
 
-    /* DISABLED */
-
     .status-text.disabled {
-        color: var(--accent-red-text);
-
-        text-shadow:
-            0 0 5px rgba(127, 29, 29, 0.35);
+        color: var(--off);
     }
 
 
     @keyframes statusPulse {
-
-        0%,
-        100% {
-            opacity: 1;
-
-            text-shadow:
-                0 0 6px rgba(34, 197, 94, 0.8),
-                0 0 14px rgba(34, 197, 94, 0.5);
-        }
-
-        50% {
-            opacity: 0.72;
-
-            text-shadow:
-                0 0 3px rgba(34, 197, 94, 0.5),
-                0 0 8px rgba(34, 197, 94, 0.25);
-        }
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.65; }
     }
 
 
@@ -462,17 +1038,16 @@ COMMON_CSS = """
 
     .switch {
         position: relative;
-
         display: inline-block;
+        margin-top: 0;
 
-        width: 44px;
+        width: 46px;
         height: 24px;
     }
 
 
     .switch input {
         opacity: 0;
-
         width: 0;
         height: 0;
     }
@@ -480,71 +1055,60 @@ COMMON_CSS = """
 
     .slider {
         position: absolute;
-
         cursor: pointer;
+        inset: 0;
 
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-
-        background-color: #27272a;
+        background-color: #161d29;
+        border: 1px solid rgba(150, 180, 215, 0.18);
+        border-radius: 34px;
 
         transition: 0.3s;
-
-        border-radius: 34px;
     }
 
 
     .slider:before {
         position: absolute;
-
         content: "";
 
         height: 16px;
         width: 16px;
 
-        left: 4px;
-        bottom: 4px;
+        left: 3px;
+        bottom: 3px;
 
-        background-color: white;
-
-        transition: 0.3s;
-
+        background-color: #8a96a8;
         border-radius: 50%;
 
-        box-shadow:
-            0 2px 4px rgba(0,0,0,0.3);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+
+        transition: 0.3s;
     }
 
 
-    /* ON */
-
     input:checked + .slider {
-        background-color: var(--accent-green);
+        background: linear-gradient(90deg, #1d6fa8, var(--bolt));
+        border-color: rgba(92, 200, 255, 0.8);
 
-        box-shadow:
-            0 0 8px rgba(34,197,94,0.35);
+        box-shadow: 0 0 14px rgba(92, 200, 255, 0.45);
     }
 
 
     input:checked + .slider:before {
-        transform: translateX(20px);
+        transform: translateX(22px);
+
+        background-color: #ffffff;
+        box-shadow: 0 0 8px rgba(207, 238, 255, 0.9);
     }
 
 
-    /* OFF */
-
     input:not(:checked) + .slider {
-        background-color: #450a0a;
-
-        box-shadow:
-            0 0 6px rgba(127,29,29,0.25);
+        border-color: rgba(255, 77, 98, 0.45);
     }
 
 
     input:not(:checked) + .slider:before {
-        background-color: #d4d4d8;
+        background-color: var(--off);
+        box-shadow: 0 0 6px rgba(255, 77, 98, 0.5);
     }
 
 
@@ -556,30 +1120,28 @@ COMMON_CSS = """
         flex: 1;
 
         display: flex;
-
         justify-content: center;
-
         align-items: center;
 
         padding: 40px 20px;
 
         overflow-y: auto;
+
+        position: relative;
+        z-index: 1;
     }
 
 
     .view {
         display: none;
-
         width: 100%;
-
         justify-content: center;
     }
 
 
     .view.active {
         display: flex;
-
-        animation: fadeIn 0.4s ease forwards;
+        animation: fadeIn 0.45s ease forwards;
     }
 
 
@@ -587,14 +1149,14 @@ COMMON_CSS = """
 
         from {
             opacity: 0;
-
-            transform: translateY(10px);
+            transform: translateY(14px);
+            filter: blur(4px);
         }
 
         to {
             opacity: 1;
-
             transform: translateY(0);
+            filter: blur(0);
         }
     }
 
@@ -604,56 +1166,123 @@ COMMON_CSS = """
        ===================================================== */
 
     .card {
-        background: var(--card-bg);
+        position: relative;
 
-        padding: 32px;
+        background:
+            linear-gradient(180deg, rgba(150, 180, 215, 0.06), transparent 30%),
+            var(--panel);
 
-        border-radius: 12px;
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
 
-        max-width: 420px;
+        padding: 34px;
 
+        max-width: 460px;
         width: 100%;
 
-        border: 1px solid var(--card-border);
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius);
 
         box-shadow:
-            0 20px 25px -5px rgba(0, 0, 0, 0.5),
-            0 8px 10px -6px rgba(0, 0, 0, 0.5);
+            0 30px 60px -20px rgba(0, 0, 0, 0.8),
+            inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+        overflow: hidden;
 
         transition:
-            transform 0.25s ease,
             border-color 0.25s ease,
             box-shadow 0.25s ease;
     }
 
 
+    /* Lightning edge along the top */
+
+    .card::before {
+        content: "";
+
+        position: absolute;
+        top: 0;
+        left: 10%;
+        right: 10%;
+        height: 1px;
+
+        background: linear-gradient(90deg, transparent, var(--bolt), var(--bolt-bright), var(--bolt), transparent);
+
+        box-shadow: 0 0 12px rgba(92, 200, 255, 0.8);
+
+        opacity: 0.7;
+    }
+
+
     .card:hover {
-        border-color: rgba(34, 197, 94, 0.4);
+        border-color: var(--panel-border-strong);
 
         box-shadow:
-            0 25px 30px -5px rgba(0, 0, 0, 0.7),
-            0 0 20px rgba(34, 197, 94, 0.12);
+            0 30px 60px -20px rgba(0, 0, 0, 0.8),
+            0 0 40px rgba(92, 200, 255, 0.07),
+            inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
 
 
     h2 {
         margin: 0 0 20px 0;
 
-        font-size: 1.4rem;
-
+        font-family: var(--font-display);
+        font-size: 1.05rem;
         font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
 
-        letter-spacing: -0.02em;
-
-        border-bottom: 1px solid var(--card-border);
+        color: var(--text-primary);
 
         padding-bottom: 16px;
+        border-bottom: 1px solid var(--panel-border);
 
         display: flex;
-
         align-items: center;
+        gap: 10px;
+    }
 
+
+    .card-header {
+        display: flex;
+        align-items: center;
         justify-content: space-between;
+        gap: 12px;
+
+        margin: 0 0 20px 0;
+        padding-bottom: 16px;
+
+        border-bottom: 1px solid var(--panel-border);
+    }
+
+
+    .card-header h2 {
+        margin: 0;
+        padding: 0;
+        border: none;
+
+        font-size: 0.9rem;
+        letter-spacing: 0.06em;
+        white-space: nowrap;
+    }
+
+
+    /* Bolt marker before headings */
+
+    h2::before {
+        content: "";
+
+        width: 10px;
+        height: 14px;
+
+        background: var(--bolt);
+
+        clip-path: polygon(60% 0, 0 58%, 45% 58%, 30% 100%, 100% 38%, 55% 38%);
+
+        filter: drop-shadow(0 0 4px var(--bolt));
+
+        flex-shrink: 0;
     }
 
 
@@ -662,9 +1291,10 @@ COMMON_CSS = """
 
         margin-top: 18px;
 
-        font-weight: 500;
-
-        font-size: 0.85rem;
+        font-weight: 600;
+        font-size: 0.78rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
 
         color: var(--text-muted);
     }
@@ -673,67 +1303,101 @@ COMMON_CSS = """
     input.form-input {
         width: 100%;
 
-        padding: 10px 14px;
-
+        padding: 11px 14px;
         margin-top: 8px;
 
-        background: #09090b;
-
+        background: rgba(3, 4, 8, 0.65);
         color: var(--text-primary);
 
-        border: 1px solid var(--card-border);
-
+        border: 1px solid var(--panel-border);
         border-radius: 8px;
 
+        font-family: var(--font-mono);
         font-size: 0.95rem;
 
         outline: none;
+        caret-color: var(--bolt);
 
         transition: all 0.2s ease;
+    }
+
+
+    input.form-input:hover {
+        border-color: var(--panel-border-strong);
     }
 
 
     input.form-input:focus {
-        border-color: var(--accent-green);
+        border-color: rgba(92, 200, 255, 0.7);
 
         box-shadow:
-            0 0 0 3px rgba(34, 197, 94, 0.2);
+            0 0 0 3px rgba(92, 200, 255, 0.12),
+            0 0 18px rgba(92, 200, 255, 0.15);
     }
 
 
     button.btn-primary {
-        margin-top: 26px;
+        position: relative;
+        overflow: hidden;
 
+        margin-top: 28px;
         width: 100%;
+        padding: 14px;
 
-        padding: 12px;
+        background: linear-gradient(180deg, #2a8fd0, #17608f);
+        color: #ffffff;
 
-        background: var(--accent-green);
-
-        color: #09090b;
-
-        border: none;
-
-        border-radius: 8px;
+        border: 1px solid rgba(92, 200, 255, 0.5);
+        border-radius: 10px;
 
         cursor: pointer;
 
+        font-family: var(--font-display);
         font-weight: 700;
-
-        font-size: 0.95rem;
-
-        transition: all 0.2s ease;
+        font-size: 0.85rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
 
         box-shadow:
-            0 4px 14px rgba(34, 197, 94, 0.3);
+            0 8px 24px -8px rgba(92, 200, 255, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.25);
+
+        transition:
+            box-shadow 0.2s ease,
+            transform 0.1s ease,
+            filter 0.2s ease;
+    }
+
+
+    /* Flash sweep on hover */
+
+    button.btn-primary::after {
+        content: "";
+
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -60%;
+        width: 40%;
+
+        background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+
+        transform: skewX(-20deg);
+        transition: left 0.5s ease;
     }
 
 
     button.btn-primary:hover {
-        background: var(--accent-green-hover);
+        filter: brightness(1.12);
 
         box-shadow:
-            0 6px 20px rgba(34, 197, 94, 0.45);
+            0 10px 30px -6px rgba(92, 200, 255, 0.7),
+            inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+
+
+    button.btn-primary:hover::after {
+        left: 120%;
     }
 
 
@@ -743,26 +1407,903 @@ COMMON_CSS = """
 
 
     .info-box {
-        background: #09090b;
+        background: rgba(3, 4, 8, 0.65);
 
-        padding: 10px 14px;
-
+        padding: 11px 14px;
         margin-top: 8px;
 
+        border: 1px solid var(--panel-border);
+        border-left: 2px solid var(--bolt);
         border-radius: 8px;
 
-        border: 1px solid var(--card-border);
-
-        font-family:
-            ui-monospace,
-            SFMono-Regular,
-            monospace;
-
+        font-family: var(--font-mono);
         font-size: 0.85rem;
 
-        color: var(--accent-green);
+        color: var(--bolt-bright);
 
         word-break: break-all;
+    }
+
+
+    /* =====================================================
+       DASHBOARD GRID
+       ===================================================== */
+
+    .view.active {
+        margin: auto 0;
+    }
+
+
+    .dashboard-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+
+        width: 100%;
+        max-width: 960px;
+    }
+
+
+    .dashboard-grid .card {
+        max-width: none;
+    }
+
+
+    .dashboard-grid .license-card {
+        grid-column: 1 / -1;
+    }
+
+
+    @media (max-width: 1100px) {
+        .dashboard-grid {
+            grid-template-columns: minmax(0, 1fr);
+            max-width: 460px;
+        }
+    }
+
+
+    /* =====================================================
+       CONTROLLER TEST
+       ===================================================== */
+
+    .dashboard-grid .controller-card {
+        grid-column: 1 / -1;
+    }
+
+
+    .pad-status {
+        padding: 4px 12px;
+
+        border: 1px solid var(--panel-border);
+        border-radius: 999px;
+
+        font-weight: 700;
+        font-size: 0.72rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+
+        color: var(--text-muted);
+    }
+
+
+    .pad-status.on {
+        border-color: #4ade80;
+        color: #4ade80;
+    }
+
+
+    .pad-name {
+        margin-bottom: 18px;
+
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--text-muted);
+
+        word-break: break-word;
+    }
+
+
+    .pad-svg {
+        display: block;
+
+        width: 100%;
+        max-width: 520px;
+        margin: 0 auto;
+    }
+
+
+    .pad-body {
+        fill: rgba(3, 4, 8, 0.55);
+
+        stroke: var(--bolt);
+        stroke-opacity: 0.5;
+        stroke-width: 2;
+    }
+
+
+    .pad-part rect,
+    .pad-part circle,
+    .pad-static {
+        fill: rgba(3, 4, 8, 0.85);
+
+        stroke: rgba(150, 180, 215, 0.35);
+        stroke-width: 1.5;
+
+        transition: fill 0.06s, stroke 0.06s;
+    }
+
+
+    .pad-part text {
+        fill: var(--text-muted);
+
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+
+        text-anchor: middle;
+        dominant-baseline: central;
+
+        pointer-events: none;
+    }
+
+
+    .pad-face-a text { fill: #4ade80; }
+    .pad-face-b text { fill: #ff4d62; }
+    .pad-face-x text { fill: #5cc8ff; }
+    .pad-face-y text { fill: #f5b942; }
+
+
+    .pad-part.pressed rect,
+    .pad-part.pressed circle {
+        fill: rgba(74, 222, 128, 0.28);
+        stroke: #4ade80;
+    }
+
+
+    .pad-part.pressed text {
+        fill: #eafff1;
+    }
+
+
+    .pad-part rect.pad-trigger-fill {
+        fill: rgba(92, 200, 255, 0.4);
+        stroke: none;
+    }
+
+
+    .pad-thumb {
+        fill: var(--bolt);
+
+        filter: drop-shadow(0 0 6px rgba(92, 200, 255, 0.6));
+    }
+
+
+    .pad-thumb.pressed {
+        fill: #4ade80;
+
+        filter: drop-shadow(0 0 7px rgba(74, 222, 128, 0.8));
+    }
+
+
+    .pad-buttons {
+        flex: 1;
+
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+        gap: 8px;
+
+        min-width: 240px;
+    }
+
+
+    .pad-btn {
+        position: relative;
+        overflow: hidden;
+
+        padding: 9px 4px;
+
+        background: rgba(3, 4, 8, 0.65);
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+
+        text-align: center;
+
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        font-weight: 600;
+
+        color: var(--text-muted);
+    }
+
+
+    .pad-btn span {
+        position: relative;
+    }
+
+
+    .pad-btn .pad-fill {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+
+        width: 100%;
+        height: 0;
+
+        background: rgba(92, 200, 255, 0.25);
+    }
+
+
+    .pad-btn.pressed {
+        border-color: #4ade80;
+        color: #4ade80;
+
+        box-shadow: 0 0 12px rgba(74, 222, 128, 0.35);
+    }
+
+
+    .pad-last {
+        margin-top: 18px;
+
+        font-size: 0.85rem;
+        color: var(--text-muted);
+    }
+
+
+    .pad-last span {
+        font-family: var(--font-mono);
+        color: var(--bolt-bright);
+    }
+
+
+    /* =====================================================
+       LICENSE CARD
+       ===================================================== */
+
+    .license-user {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+
+    .license-row {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+    }
+
+
+    .license-label {
+        font-weight: 600;
+        font-size: 0.78rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+    }
+
+
+    .license-time {
+        margin-top: 6px;
+
+        font-family: var(--font-display);
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+
+        color: var(--bolt-bright);
+        text-shadow: 0 0 18px rgba(92, 200, 255, 0.45);
+    }
+
+
+    .event-banner {
+        display: none;
+
+        margin-bottom: 16px;
+        padding: 12px 14px;
+
+        border-radius: 10px;
+
+        font-weight: 600;
+        font-size: 0.92rem;
+    }
+
+
+    .event-banner.live {
+        display: block;
+
+        background: rgba(74, 222, 128, 0.12);
+        border: 1px solid #4ade80;
+
+        color: #4ade80;
+    }
+
+
+    .event-banner.upcoming {
+        display: block;
+
+        background: rgba(92, 200, 255, 0.08);
+        border: 1px solid var(--panel-border);
+
+        color: var(--bolt-bright);
+    }
+
+
+    .license-time.paused {
+        color: var(--text-muted);
+        text-shadow: none;
+    }
+
+
+    .license-time.expired {
+        color: var(--off);
+        text-shadow: 0 0 14px rgba(255, 77, 98, 0.4);
+    }
+
+
+    .redeem-form {
+        display: flex;
+        gap: 10px;
+
+        flex: 1;
+        min-width: 280px;
+        max-width: 480px;
+    }
+
+
+    .redeem-form input.form-input {
+        margin-top: 0;
+        text-transform: uppercase;
+    }
+
+
+    .redeem-form button.btn-primary {
+        margin-top: 0;
+        width: auto;
+        padding: 0 22px;
+        flex-shrink: 0;
+    }
+
+
+    .form-msg {
+        min-height: 1.2em;
+        margin-top: 12px;
+
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+
+    .form-msg.ok {
+        color: var(--on);
+    }
+
+
+    .form-msg.err {
+        color: var(--off);
+    }
+
+
+    /* =====================================================
+       LOCKED STATE
+       ===================================================== */
+
+    .card.locked form,
+    .card.locked .card-toggle {
+        opacity: 0.3;
+        filter: grayscale(1);
+        pointer-events: none;
+    }
+
+
+    .card.locked::after {
+        content: "LOCKED \\2014  REDEEM A KEY";
+
+        position: absolute;
+        inset: 0;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        background: rgba(6, 8, 13, 0.45);
+
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 0.9rem;
+        letter-spacing: 0.18em;
+
+        color: var(--off);
+        text-shadow: 0 0 12px rgba(255, 77, 98, 0.5);
+    }
+
+
+    /* =====================================================
+       LOGIN
+       ===================================================== */
+
+    .auth-card {
+        max-width: 420px;
+    }
+
+
+    .auth-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+
+        padding: 4px;
+        margin-bottom: 8px;
+
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+    }
+
+
+    .auth-tab {
+        padding: 10px;
+
+        background: none;
+        border: none;
+        border-radius: 8px;
+
+        color: var(--text-muted);
+
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 0.8rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+
+    .bind-tabs {
+        margin-top: 8px;
+        margin-bottom: 0;
+    }
+
+
+    .bind-row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+
+
+    .bind-row .form-input {
+        flex: 1;
+    }
+
+
+    .bind-row .btn-sm {
+        margin-top: 8px;
+        padding: 10px 16px;
+    }
+
+
+    .bind-row .form-input.listening {
+        border-color: #4ade80;
+        color: #4ade80;
+    }
+
+
+    .bind-hint {
+        margin-top: 6px;
+
+        font-size: 0.8rem;
+        color: var(--text-muted);
+    }
+
+
+    .bind-hint.err {
+        color: var(--off);
+    }
+
+
+    .auth-tab.active {
+        background: rgba(92, 200, 255, 0.14);
+        color: var(--bolt-bright);
+    }
+
+
+    .auth-card button:disabled,
+    .auth-card input:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+
+    .integrity-banner {
+        margin-bottom: 16px;
+        padding: 12px 14px;
+
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid var(--off);
+        border-radius: 10px;
+
+        color: var(--off);
+
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+
+    .build-status {
+        font-weight: 600;
+    }
+
+
+    .build-status.ok {
+        color: #4ade80;
+    }
+
+
+    .build-status.warn {
+        color: #f5b942;
+    }
+
+
+    .build-status.err {
+        color: var(--off);
+    }
+
+
+    .auth-hwid {
+        margin-top: 18px;
+
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        color: var(--text-muted);
+
+        word-break: break-all;
+    }
+
+
+    /* =====================================================
+       ADMIN PANEL
+       ===================================================== */
+
+    .admin-card {
+        max-width: 1180px;
+    }
+
+
+    .admin-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 14px;
+
+        margin-bottom: 28px;
+    }
+
+
+    .stat-tile {
+        padding: 14px 16px;
+
+        background: rgba(3, 4, 8, 0.55);
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+    }
+
+
+    .stat-value {
+        margin-top: 6px;
+
+        font-family: var(--font-display);
+        font-size: 1.6rem;
+        font-weight: 700;
+
+        color: var(--bolt-bright);
+    }
+
+
+    .stat-sub {
+        margin-top: 2px;
+
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+    }
+
+
+    .admin-section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+
+        margin: 8px 0 12px;
+    }
+
+
+    .admin-section-title h3 {
+        font-family: var(--font-display);
+        font-size: 0.85rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+
+        color: var(--text-primary);
+    }
+
+
+    .admin-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+
+    .admin-tools .muted {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+    }
+
+
+    .admin-note {
+        margin: 0 0 10px;
+
+        font-size: 0.82rem;
+        color: var(--text-muted);
+    }
+
+
+    .admin-tools .form-input,
+    .admin-tools select.form-input {
+        width: auto;
+        margin-top: 0;
+        padding: 8px 12px;
+        font-size: 0.85rem;
+    }
+
+
+    select.form-input {
+        width: 100%;
+        padding: 11px 14px;
+        margin-top: 8px;
+
+        background: rgba(3, 4, 8, 0.65);
+        color: var(--text-primary);
+
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+
+        font-family: var(--font-mono);
+        outline: none;
+    }
+
+
+    .table-wrap {
+        overflow-x: auto;
+
+        margin-bottom: 30px;
+
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+    }
+
+
+    .admin-table {
+        width: 100%;
+        border-collapse: collapse;
+
+        font-size: 0.88rem;
+    }
+
+
+    .admin-table th {
+        position: sticky;
+        top: 0;
+
+        padding: 10px 12px;
+
+        background: #0d121b;
+
+        text-align: left;
+
+        font-family: var(--font-display);
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+
+        color: var(--text-muted);
+
+        white-space: nowrap;
+    }
+
+
+    .admin-table td {
+        padding: 10px 12px;
+
+        border-top: 1px solid var(--panel-border);
+
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+
+    .admin-table tr:hover td {
+        background: rgba(150, 180, 215, 0.04);
+    }
+
+
+    .admin-table .mono {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+    }
+
+
+    .admin-table .muted {
+        color: var(--text-muted);
+    }
+
+
+    .user-name {
+        margin-right: 8px;
+        font-weight: 600;
+    }
+
+
+    .hwid-cell {
+        max-width: 130px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+
+    .badge {
+        display: inline-block;
+
+        padding: 2px 8px;
+        margin-right: 4px;
+
+        border-radius: 999px;
+        border: 1px solid currentColor;
+
+        font-family: var(--font-display);
+        font-size: 0.62rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+    }
+
+
+    .badge.active  { color: var(--on); }
+    .badge.expired { color: var(--text-muted); }
+    .badge.banned  { color: var(--off); }
+    .badge.admin   { color: var(--storm-violet); }
+    .badge.live    { color: #4ade80; }
+    .badge.upcoming { color: var(--bolt-bright); }
+
+
+    .online-dot {
+        display: inline-block;
+
+        width: 7px;
+        height: 7px;
+        margin-right: 6px;
+
+        border-radius: 50%;
+
+        background: #3a4455;
+    }
+
+
+    .online-dot.on {
+        background: var(--on);
+        box-shadow: 0 0 6px var(--on);
+    }
+
+
+    .row-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+
+    .row-actions input.form-input {
+        width: 70px;
+        margin-top: 0;
+        padding: 6px 8px;
+        font-size: 0.8rem;
+    }
+
+
+    .btn-sm {
+        padding: 6px 10px;
+
+        background: rgba(150, 180, 215, 0.08);
+        color: var(--text-primary);
+
+        border: 1px solid var(--panel-border-strong);
+        border-radius: 7px;
+
+        font-family: var(--font-display);
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+
+        cursor: pointer;
+        white-space: nowrap;
+
+        transition: all 0.15s ease;
+    }
+
+
+    .btn-sm:hover {
+        border-color: var(--bolt);
+        color: var(--bolt-bright);
+    }
+
+
+    .btn-sm.primary {
+        background: linear-gradient(180deg, #2a8fd0, #17608f);
+        border-color: rgba(92, 200, 255, 0.5);
+    }
+
+
+    .btn-sm.danger {
+        color: var(--off);
+        border-color: rgba(255, 77, 98, 0.4);
+    }
+
+
+    .btn-sm.danger:hover {
+        background: rgba(255, 77, 98, 0.1);
+        color: #ff8595;
+    }
+
+
+    .btn-sm:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+
+
+    .new-keys {
+        width: 100%;
+        min-height: 90px;
+        margin-bottom: 14px;
+
+        padding: 10px 12px;
+
+        background: rgba(3, 4, 8, 0.65);
+        color: var(--bolt-bright);
+
+        border: 1px solid rgba(92, 200, 255, 0.4);
+        border-radius: 8px;
+
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+
+        resize: vertical;
+    }
+
+
+    .empty-row td {
+        text-align: center;
+        color: var(--text-muted);
+        padding: 22px;
+    }
+
+
+    @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+            animation: none !important;
+            transition: none !important;
+        }
     }
 
 </style>
@@ -856,6 +2397,35 @@ COMMON_CSS = """
 
         </symbol>
 
+        <symbol
+            id="icon-power"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round">
+
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+
+            <line x1="12" y1="2" x2="12" y2="12"></line>
+
+        </symbol>
+
+
+        <symbol
+            id="icon-shield"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round">
+
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+
+        </symbol>
+
     </defs>
 </svg>
 """
@@ -868,28 +2438,98 @@ COMMON_CSS = """
 app = Flask(__name__)
 
 
-@app.route("/")
-def home():
+def html_escape(value):
 
-    sys_os = f"{platform.system()} {platform.release()}"
-
-    sys_node = platform.node()
-
-    sys_processor = platform.processor() or "Unknown"
-
-    public_ip = get_public_ip()
-
-    hwid = get_hwid()
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
-    is_active_checked = "checked" if config["active"] else ""
+# =========================================================
+# SHARED JS
+# =========================================================
 
-    status_text = "Enabled" if config["active"] else "Disabled"
+COMMON_JS = """
+<script>
 
-    status_class = "enabled" if config["active"] else "disabled"
+async function postJSON(url, data) {
+
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data || {})
+    });
+
+    let body = {};
+
+    try { body = await res.json(); } catch (e) {}
+
+    return { ok: res.ok, body: body };
+
+}
 
 
-    return f"""
+function showMsg(el, text, ok) {
+
+    el.innerText = text;
+
+    el.classList.remove("ok", "err");
+
+    el.classList.add(ok ? "ok" : "err");
+
+}
+
+
+async function exitApp() {
+
+    document.body.innerHTML = `
+
+        <div
+            style="
+                display:flex;
+                height:100vh;
+                width:100vw;
+                justify-content:center;
+                align-items:center;
+                background:#06080d;
+                color:#cfeeff;
+                font-family:Oxanium, sans-serif;
+                letter-spacing:0.1em;
+                text-shadow:0 0 10px rgba(92,200,255,0.6);
+                font-size:1.5rem;
+                font-weight:bold;
+            "
+        >
+            Application Closed.
+            You can close this window.
+        </div>
+
+    `;
+
+
+    try {
+
+        await fetch("/api/shutdown", { method: "POST" });
+
+    }
+
+    catch (error) {}
+
+}
+
+</script>
+"""
+
+
+# =========================================================
+# LOGIN PAGE
+# =========================================================
+
+LOGIN_PAGE = """
 <!DOCTYPE html>
 
 <html lang="en">
@@ -898,14 +2538,11 @@ def home():
 
     <meta charset="UTF-8">
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>Yakuza Solutions</title>
+    <title>Amos Solutions</title>
 
-    {COMMON_CSS}
+    __COMMON_CSS__
 
 </head>
 
@@ -913,211 +2550,76 @@ def home():
 <body>
 
 
-<!-- =====================================================
-     SIDEBAR
-     ===================================================== -->
-
-<nav class="sidebar" id="sidebar">
-
-    <div class="sidebar-header">
-
-        <a href="#" class="sidebar-logo">
-
-            <svg width="28" height="28">
-                <use href="#icon-zap"></use>
-            </svg>
-
-            <span>Yakuza Solutions</span>
-
-        </a>
-
-    </div>
-
-
-    <div class="sidebar-nav">
-
-        <a
-            class="nav-item active"
-            onclick="switchView('dashboard', this)"
-        >
-
-            <svg width="20" height="20">
-                <use href="#icon-home"></use>
-            </svg>
-
-            <span>Dashboard</span>
-
-        </a>
-
-
-        <a
-            class="nav-item"
-            onclick="switchView('settings', this)"
-        >
-
-            <svg width="20" height="20">
-                <use href="#icon-settings"></use>
-            </svg>
-
-            <span>Hardware Info</span>
-
-        </a>
-
-
-        <a
-            class="nav-item logout-btn"
-            onclick="logout()"
-        >
-
-            <svg width="20" height="20">
-                <use href="#icon-logout"></use>
-            </svg>
-
-            <span>Logout</span>
-
-        </a>
-
-    </div>
-
-</nav>
-
-
-<!-- =====================================================
-     MAIN
-     ===================================================== -->
-
 <main class="main-wrapper">
 
-
-    <!-- HEADER -->
 
     <header class="topbar">
 
         <div class="topbar-left">
 
-
-            <!-- MENU -->
-
-            <button
-                class="menu-toggle"
-                onclick="toggleSidebar()"
-            >
-
-                <svg width="24" height="24">
-                    <use href="#icon-menu"></use>
-                </svg>
-
-            </button>
-
-
-            <!-- BRAND -->
-
             <div class="brand-title">
-                Yakuza Solutions
+                Amos Solutions
             </div>
-
-
-            <!-- STATUS ATTACHED TO HEADER -->
-
-            <div class="header-status">
-
-
-                <label class="switch">
-
-                    <input
-                        type="checkbox"
-                        id="macroToggle"
-                        {is_active_checked}
-                        onchange="toggleMacro(this)"
-                    >
-
-                    <span class="slider"></span>
-
-                </label>
-
-
-                <span
-                    class="status-text {status_class}"
-                    id="macroStatus"
-                >
-                    {status_text}
-                </span>
-
-
-            </div>
-
 
         </div>
 
     </header>
 
 
-    <!-- =================================================
-         VIEWS
-         ================================================= -->
-
     <div class="view-container">
 
+        <div class="view active">
 
-        <!-- DASHBOARD -->
-
-        <div
-            id="view-dashboard"
-            class="view active"
-        >
-
-            <div class="card">
+            <div class="card auth-card">
 
 
-                <h2>
-                    Hotkey Configuration
+                <h2 id="authTitle">
+                    Sign In
                 </h2>
 
 
-                <form
-                    id="configForm"
-                    onsubmit="saveSettings(event)"
-                >
+                __INTEGRITY__
+
+
+                <div class="auth-tabs">
+
+                    <button class="auth-tab active" id="tabLogin" onclick="setMode('login')">
+                        Login
+                    </button>
+
+                    <button class="auth-tab" id="tabRegister" onclick="setMode('register')">
+                        Register
+                    </button>
+
+                </div>
+
+
+                <form id="authForm" onsubmit="submitAuth(event)">
 
 
                     <label>
-                        Trigger Key:
+                        Username:
                     </label>
 
                     <input
                         class="form-input"
                         type="text"
-                        id="trigger_key"
-                        value="{config['trigger_key']}"
-                        maxlength="1"
+                        id="username"
+                        autocomplete="username"
+                        maxlength="24"
                         required
                     >
 
 
                     <label>
-                        Target Key:
+                        Password:
                     </label>
 
                     <input
                         class="form-input"
-                        type="text"
-                        id="target_key"
-                        value="{config['target_key']}"
-                        maxlength="1"
-                        required
-                    >
-
-
-                    <label>
-                        Delay (ms):
-                    </label>
-
-                    <input
-                        class="form-input"
-                        type="number"
-                        id="delay_ms"
-                        value="{config['delay_ms']}"
-                        min="0"
+                        type="password"
+                        id="password"
+                        autocomplete="current-password"
                         required
                     >
 
@@ -1125,90 +2627,126 @@ def home():
                     <button
                         type="submit"
                         class="btn-primary"
-                        id="saveBtn"
+                        id="authBtn"
                     >
-                        Save Settings
+                        Login
                     </button>
 
 
                 </form>
 
 
-            </div>
-
-        </div>
+                <div class="form-msg" id="authMsg"></div>
 
 
-        <!-- HARDWARE INFO -->
-
-        <div
-            id="view-settings"
-            class="view"
-        >
-
-            <div class="card">
-
-
-                <h2>
-                    System Information
-                </h2>
-
-
-                <label>
-                    Public IPv4 Address
-                </label>
-
-                <div class="info-box">
-                    {public_ip}
+                <div class="auth-hwid">
+                    HWID: __HWID__
+                    <br>
+                    BUILD: <span class="build-status __BUILD_CLASS__">__BUILD_STATUS__</span>
                 </div>
 
 
-                <label>
-                    Hardware ID (HWID)
-                </label>
-
-                <div class="info-box">
-                    {hwid}
-                </div>
-
-
-                <label>
-                    Operating System
-                </label>
-
-                <div class="info-box">
-                    {sys_os}
-                </div>
-
-
-                <label>
-                    Hostname
-                </label>
-
-                <div class="info-box">
-                    {sys_node}
-                </div>
-
-
-                <label>
-                    Processor
-                </label>
-
-                <div class="info-box">
-                    {sys_processor}
-                </div>
+                <button class="btn-sm auth-exit" onclick="exitApp()">
+                    Exit App
+                </button>
 
 
             </div>
 
         </div>
-
 
     </div>
 
 </main>
 
 
+__COMMON_JS__
+
+
+<script>
+
+let mode = "login";
+
+
+// A modified or outdated build can't log in, so lock the form.
+if (document.getElementById("integrityMsg")) {
+
+    document
+        .querySelectorAll(".auth-tab, #authForm input, #authForm button")
+        .forEach(el => { el.disabled = true; });
+
+}
+
+
+function setMode(next) {
+
+    mode = next;
+
+    const isLogin = mode === "login";
+
+    document.getElementById("tabLogin").classList.toggle("active", isLogin);
+    document.getElementById("tabRegister").classList.toggle("active", !isLogin);
+
+    document.getElementById("authTitle").innerText = isLogin ? "Sign In" : "Create Account";
+    document.getElementById("authBtn").innerText = isLogin ? "Login" : "Register";
+
+    document.getElementById("password").autocomplete =
+        isLogin ? "current-password" : "new-password";
+
+    document.getElementById("authMsg").innerText = "";
+
+}
+
+
+async function submitAuth(event) {
+
+    event.preventDefault();
+
+    const btn = document.getElementById("authBtn");
+    const msg = document.getElementById("authMsg");
+
+    btn.disabled = true;
+
+    try {
+
+        const res = await postJSON("/api/" + mode, {
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value
+        });
+
+        if (res.ok) {
+            window.location.reload();
+            return;
+        }
+
+        showMsg(msg, res.body.error || "Something went wrong.", false);
+
+    }
+
+    catch (error) {
+
+        showMsg(msg, "Couldn't reach the app.", false);
+
+    }
+
+    btn.disabled = false;
+
+}
+
+</script>
+
+
+</body>
+
+</html>
+"""
+
+
+# =========================================================
+# DASHBOARD JS
+# =========================================================
+
+DASHBOARD_JS = """
 <script>
 
 
@@ -1257,61 +2795,282 @@ function switchView(viewName, element) {
 
 
 // =========================================================
-// TOGGLE MACRO
+// LICENSE COUNTDOWN
 // =========================================================
 
-async function toggleMacro(checkbox) {
+let remaining = Number(
+    document.getElementById("licenseTime").dataset.remaining
+);
 
-    const statusText =
-        document.getElementById("macroStatus");
+let lastTick = performance.now();
 
 
-    if (checkbox.checked) {
+// Free-time events. While one runs, remaining = event time left +
+// the paused key time that resumes after it.
+let liveEvent = null;
 
-        statusText.innerText = "Enabled";
+let nextEvent = null;
 
-        statusText.classList.remove("disabled");
 
-        statusText.classList.add("enabled");
+function setEvents(info) {
+
+    liveEvent = info.event;
+
+    nextEvent = info.next_event;
+
+}
+
+
+setEvents(JSON.parse(
+    document.getElementById("licenseTime").dataset.events || "{}"
+));
+
+
+function formatRemaining(seconds) {
+
+    seconds = Math.floor(seconds);
+
+    if (seconds <= 0) {
+        return "Expired";
+    }
+
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+
+    const pad = n => String(n).padStart(2, "0");
+
+    return (d > 0 ? d + "d " : "") + pad(h) + "h " + pad(m) + "m " + pad(s) + "s";
+
+}
+
+
+function renderLicense() {
+
+    const el = document.getElementById("licenseTime");
+
+    // The page may have been replaced (e.g. after Exit).
+    if (!el) return;
+
+    const locked = remaining <= 0;
+
+    const live = liveEvent && liveEvent.remaining_seconds > 0;
+
+    const banner = document.getElementById("eventBanner");
+
+    const label = document.getElementById("licenseLabel");
+
+
+    if (live) {
+
+        // Show the key's own time, which stays paused.
+        const paid = Math.max(0, remaining - liveEvent.remaining_seconds);
+
+        banner.className = "event-banner live";
+
+        banner.innerText =
+            liveEvent.name + " is live! Free access for everyone for another " +
+            formatRemaining(liveEvent.remaining_seconds) +
+            ". Your key's time is paused until it ends.";
+
+        label.innerText = "Key Time (paused)";
+
+        el.innerText = paid > 0 ? formatRemaining(paid) : "No key time";
+
+        el.classList.add("paused");
+
+        el.classList.remove("expired");
 
     }
 
     else {
 
-        statusText.innerText = "Disabled";
+        if (nextEvent && nextEvent.starts_in > 0) {
 
-        statusText.classList.remove("enabled");
+            banner.className = "event-banner upcoming";
 
-        statusText.classList.add("disabled");
+            banner.innerText =
+                nextEvent.name + " starts in " + formatRemaining(nextEvent.starts_in) +
+                " (" + nextEvent.hours + "h of free access for everyone).";
+
+        }
+
+        else {
+
+            banner.className = "event-banner";
+
+        }
+
+        label.innerText = "Time Remaining";
+
+        el.innerText = formatRemaining(remaining);
+
+        el.classList.remove("paused");
+
+        el.classList.toggle("expired", locked);
 
     }
 
+    document
+        .querySelectorAll(".card.lockable")
+        .forEach(card => card.classList.toggle("locked", locked));
+
+}
+
+
+setInterval(() => {
+
+    const t = performance.now();
+
+    const dt = (t - lastTick) / 1000;
+
+    remaining = Math.max(0, remaining - dt);
+
+    lastTick = t;
+
+
+    // Sync as soon as an event starts or ends so the server's
+    // numbers take over.
+    let changed = false;
+
+    if (liveEvent && liveEvent.remaining_seconds > 0) {
+        liveEvent.remaining_seconds = Math.max(0, liveEvent.remaining_seconds - dt);
+        changed = changed || liveEvent.remaining_seconds === 0;
+    }
+
+    if (nextEvent && nextEvent.starts_in > 0) {
+        nextEvent.starts_in = Math.max(0, nextEvent.starts_in - dt);
+        changed = changed || nextEvent.starts_in === 0;
+    }
+
+    if (changed) {
+        setTimeout(syncLicense, 3000);
+    }
+
+    renderLicense();
+
+}, 250);
+
+
+async function syncLicense() {
 
     try {
 
-        await fetch(
-            "/api/toggle",
-            {
-                method: "POST",
+        const res = await postJSON("/api/license");
 
-                headers: {
-                    "Content-Type": "application/json"
-                },
+        if (res.body.logged_in === false) {
+            window.location.reload();
+            return;
+        }
 
-                body: JSON.stringify({
-                    active: checkbox.checked
-                })
-            }
-        );
+        if (res.ok) {
+            remaining = res.body.remaining_seconds;
+            setEvents(res.body);
+            lastTick = performance.now();
+            renderLicense();
+        }
+
+    }
+
+    catch (error) {}
+
+}
+
+
+setInterval(syncLicense, 30000);
+
+renderLicense();
+
+
+// =========================================================
+// REDEEM KEY
+// =========================================================
+
+async function redeemKey(event) {
+
+    event.preventDefault();
+
+    const input = document.getElementById("license_key");
+    const btn = document.getElementById("redeemBtn");
+    const msg = document.getElementById("redeemMsg");
+
+    btn.disabled = true;
+
+    try {
+
+        const res = await postJSON("/api/redeem", { key: input.value });
+
+        if (res.ok) {
+
+            remaining = res.body.remaining_seconds;
+            lastTick = performance.now();
+            renderLicense();
+
+            input.value = "";
+
+            showMsg(msg, "Key redeemed: +" + res.body.added_days + " day(s) added.", true);
+
+        }
+
+        else {
+
+            showMsg(msg, res.body.error || "Couldn't redeem that key.", false);
+
+        }
 
     }
 
     catch (error) {
 
-        console.error(
-            "Failed to update macro state:",
-            error
-        );
+        showMsg(msg, "Couldn't reach the app.", false);
+
+    }
+
+    btn.disabled = false;
+
+}
+
+
+// =========================================================
+// TOGGLE FEATURE
+// =========================================================
+
+function setStatus(statusText, on) {
+
+    statusText.innerText = on ? "Enabled" : "Disabled";
+
+    statusText.classList.toggle("enabled", on);
+
+    statusText.classList.toggle("disabled", !on);
+
+}
+
+
+async function toggleFeature(checkbox, feature, statusId) {
+
+    const statusText = document.getElementById(statusId);
+
+    setStatus(statusText, checkbox.checked);
+
+
+    try {
+
+        const res = await postJSON("/api/toggle", {
+            feature: feature,
+            active: checkbox.checked
+        });
+
+        if (!res.ok) {
+            checkbox.checked = !checkbox.checked;
+            setStatus(statusText, checkbox.checked);
+        }
+
+    }
+
+    catch (error) {
+
+        console.error("Failed to update " + feature + " state:", error);
 
     }
 
@@ -1322,74 +3081,35 @@ async function toggleMacro(checkbox) {
 // SAVE SETTINGS
 // =========================================================
 
-async function saveSettings(event) {
-
-    event.preventDefault();
-
-
-    const btn =
-        document.getElementById("saveBtn");
-
-
-    const data = {
-
-        trigger_key:
-            document
-                .getElementById("trigger_key")
-                .value,
-
-        target_key:
-            document
-                .getElementById("target_key")
-                .value,
-
-        delay_ms:
-            document
-                .getElementById("delay_ms")
-                .value
-
-    };
-
+async function postSettings(data, btn) {
 
     try {
 
-        const res = await fetch(
-            "/api/update",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type": "application/json"
-                },
-
-                body: JSON.stringify(data)
-            }
-        );
+        const res = await postJSON("/api/update", data);
 
 
         if (res.ok) {
 
-            const originalText =
-                btn.innerText;
+            const originalText = btn.innerText;
 
+            btn.innerText = "Settings Saved!";
 
-            btn.innerText =
-                "Settings Saved!";
-
-
-            btn.style.background =
-                "#16a34a";
+            btn.style.background = "#1f9d6b";
 
 
             setTimeout(() => {
 
-                btn.innerText =
-                    originalText;
+                btn.innerText = originalText;
 
-                btn.style.background =
-                    "";
+                btn.style.background = "";
 
             }, 2000);
+
+        }
+
+        else {
+
+            alert(res.body.error || "Couldn't save settings.");
 
         }
 
@@ -1397,12 +3117,216 @@ async function saveSettings(event) {
 
     catch (error) {
 
-        console.error(
-            "Failed to save settings:",
-            error
-        );
+        console.error("Failed to save settings:", error);
 
     }
+
+}
+
+
+// =========================================================
+// TRIGGER BINDING
+// =========================================================
+
+let triggerSource =
+    document.getElementById("srcController").classList.contains("active")
+        ? "controller" : "keyboard";
+
+
+function setTriggerSource(source) {
+
+    triggerSource = source;
+
+    const pad = source === "controller";
+
+    document.getElementById("srcKeyboard").classList.toggle("active", !pad);
+    document.getElementById("srcController").classList.toggle("active", pad);
+
+    document.getElementById("keyboardBind").hidden = pad;
+    document.getElementById("controllerBind").hidden = !pad;
+
+    document.getElementById("targetKeyboard").hidden = pad;
+    document.getElementById("targetController").hidden = !pad;
+
+}
+
+
+// Each Bind button fills in its field from the next controller
+// button pressed.
+const PAD_BINDS = {
+    trigger: { field: "trigger_pad", btn: "padBindBtn", msg: "padBindMsg" },
+    target: { field: "target_pad", btn: "targetBindBtn", msg: "targetBindMsg" },
+};
+
+let padBinding = null;
+
+
+function padBindHint(which, text, isError) {
+
+    const hint = document.getElementById(PAD_BINDS[which].msg);
+
+    hint.textContent = text;
+
+    hint.classList.toggle("err", !!isError);
+
+}
+
+
+function stopPadBinding(text, isError) {
+
+    if (!padBinding) return;
+
+    const ids = PAD_BINDS[padBinding.which];
+
+    cancelAnimationFrame(padBinding.frame);
+
+    document.getElementById(ids.field).classList.remove("listening");
+
+    document.getElementById(ids.btn).textContent = "Bind";
+
+    padBindHint(padBinding.which, text, isError);
+
+    padBinding = null;
+
+}
+
+
+function bindPad(which) {
+
+    // Clicking Bind again cancels; clicking the other one switches.
+    if (padBinding) {
+
+        const same = padBinding.which === which;
+
+        stopPadBinding("Cancelled.", false);
+
+        if (same) return;
+
+    }
+
+
+    const pads = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(p => p);
+
+    if (!pads.length) {
+        padBindHint(which, "No controller found. Press any button on it, then click Bind.", true);
+        return;
+    }
+
+
+    // Remember what's already held so only a fresh press binds.
+    const held = new Set();
+
+    pads.forEach(p => p.buttons.forEach((b, i) => { if (b.pressed) held.add(p.index + ":" + i); }));
+
+    padBinding = { which: which, held: held, until: performance.now() + 10000, frame: 0 };
+
+    document.getElementById(PAD_BINDS[which].field).classList.add("listening");
+
+    document.getElementById(PAD_BINDS[which].btn).textContent = "Cancel";
+
+    padBindHint(which, "Press a button on your controller...", false);
+
+    padBinding.frame = requestAnimationFrame(watchPadBinding);
+
+}
+
+
+function watchPadBinding() {
+
+    if (!padBinding) return;
+
+
+    if (performance.now() > padBinding.until) {
+        stopPadBinding("No button pressed. Click Bind to try again.", true);
+        return;
+    }
+
+
+    for (const pad of navigator.getGamepads()) {
+
+        if (!pad) continue;
+
+        for (let i = 0; i < pad.buttons.length; i++) {
+
+            const id = pad.index + ":" + i;
+
+            if (!pad.buttons[i].pressed) {
+                padBinding.held.delete(id);
+                continue;
+            }
+
+            if (padBinding.held.has(id)) continue;
+
+
+            const name = pad.mapping === "standard" ? PAD_NAMES[i] : null;
+
+            if (!name || name === "Home") {
+                stopPadBinding("That button can't be used. Pick another.", true);
+                return;
+            }
+
+            document.getElementById(PAD_BINDS[padBinding.which].field).value = name;
+
+            stopPadBinding("Bound to " + name + ". Click Save Settings to use it.", false);
+
+            return;
+
+        }
+
+    }
+
+
+    padBinding.frame = requestAnimationFrame(watchPadBinding);
+
+}
+
+
+async function saveSettings(event) {
+
+    event.preventDefault();
+
+    const data = {
+        trigger_source: triggerSource,
+        trigger_pad: document.getElementById("trigger_pad").value,
+        target_pad: document.getElementById("target_pad").value,
+        delay_ms: document.getElementById("delay_ms").value
+    };
+
+
+    if (triggerSource === "keyboard") {
+
+        for (const id of ["trigger_key", "target_key"]) {
+
+            const input = document.getElementById(id);
+
+            if (!input.value) {
+                input.focus();
+                return;
+            }
+
+            data[id] = input.value;
+
+        }
+
+    }
+
+
+    await postSettings(data, document.getElementById("saveBtn"));
+
+}
+
+
+async function saveAutoBuild(event) {
+
+    event.preventDefault();
+
+    await postSettings(
+        {
+            auto_build_key: document.getElementById("auto_build_key").value,
+            auto_build_delay_ms: document.getElementById("auto_build_delay_ms").value
+        },
+        document.getElementById("autoBuildSaveBtn")
+    );
 
 }
 
@@ -1413,39 +3337,1716 @@ async function saveSettings(event) {
 
 async function logout() {
 
-    document.body.innerHTML = `
+    try {
+
+        await postJSON("/api/logout");
+
+    }
+
+    catch (error) {}
+
+
+    window.location.href = "/";
+
+}
+
+
+// =========================================================
+// CONTROLLER TEST
+// =========================================================
+
+// Button names for the browser's "standard" (Xbox-style) layout.
+// PlayStation: A = Cross, B = Circle, X = Square, Y = Triangle.
+const PAD_NAMES = [
+    "A", "B", "X", "Y", "LB", "RB", "LT", "RT",
+    "View", "Menu", "LS", "RS", "Up", "Down", "Left", "Right", "Home",
+];
+
+let padIndex = null;
+
+let padStandard = true;
+
+// SVG parts by button index for standard controllers; plain chips
+// for controllers the browser can't map to the standard layout.
+let padParts = [];
+
+let padChips = [];
+
+let padPressed = [];
+
+
+function padButtonName(pad, i) {
+
+    return pad.mapping === "standard" && PAD_NAMES[i] ? PAD_NAMES[i] : "B" + i;
+
+}
+
+
+function buildPadChips(pad) {
+
+    padChips = pad.buttons.map((_, i) => {
+
+        const chip = document.createElement("div");
+
+        chip.className = "pad-btn";
+
+        const fill = document.createElement("div");
+
+        fill.className = "pad-fill";
+
+        const label = document.createElement("span");
+
+        label.textContent = padButtonName(pad, i);
+
+        chip.append(fill, label);
+
+        return chip;
+
+    });
+
+    document.getElementById("padButtons").replaceChildren(...padChips);
+
+}
+
+
+function setTriggerFill(i, value) {
+
+    const fill = document.getElementById("padFill" + i);
+
+    // The fill rises from the bottom of the 28-unit-tall trigger.
+    const h = 28 * value;
+
+    fill.setAttribute("height", h);
+
+    fill.setAttribute("y", 40 - h);
+
+}
+
+
+function moveStick(id, x, y, pressed) {
+
+    const thumb = document.getElementById(id);
+
+    // How far the thumb can travel inside its ring.
+    const reach = id === "stickL" ? 14 : 13;
+
+    thumb.setAttribute("transform", "translate(" + (x * reach) + " " + (y * reach) + ")");
+
+    thumb.classList.toggle("pressed", pressed);
+
+}
+
+
+function resetPad() {
+
+    padParts.forEach(part => part.classList.remove("pressed"));
+
+    setTriggerFill(6, 0);
+
+    setTriggerFill(7, 0);
+
+    moveStick("stickL", 0, 0, false);
+
+    moveStick("stickR", 0, 0, false);
+
+    document.getElementById("padButtons").replaceChildren();
+
+    padChips = [];
+
+}
+
+
+function showPadStatus(pad) {
+
+    const status = document.getElementById("padStatus");
+
+    const name = document.getElementById("padName");
+
+    resetPad();
+
+
+    padStandard = !pad || pad.mapping === "standard";
+
+    document.getElementById("padSvg").style.display = padStandard ? "" : "none";
+
+    document.getElementById("padButtons").hidden = padStandard;
+
+
+    if (pad) {
+
+        status.textContent = "Connected";
+
+        status.classList.add("on");
+
+        name.textContent = pad.id;
+
+        if (!padStandard) buildPadChips(pad);
+
+        padPressed = pad.buttons.map(() => false);
+
+    }
+
+    else {
+
+        status.textContent = "No controller";
+
+        status.classList.remove("on");
+
+        name.textContent = "Plug in a controller and press any button on it.";
+
+    }
+
+}
+
+
+function pollPad() {
+
+    requestAnimationFrame(pollPad);
+
+    if (!document.getElementById("padSvg")) return;
+
+
+    if (!padParts.length) {
+
+        document.querySelectorAll("#padSvg [data-btn]").forEach(part => {
+            padParts[Number(part.dataset.btn)] = part;
+        });
+
+    }
+
+
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+
+    let pad = padIndex !== null ? pads[padIndex] : null;
+
+
+    // Use the first controller that shows up.
+    if (!pad) {
+
+        pad = Array.from(pads).find(p => p) || null;
+
+        if (!pad) {
+
+            // The controller went away without a disconnect event.
+            if (padIndex !== null) {
+                padIndex = null;
+                showPadStatus(null);
+            }
+
+            return;
+
+        }
+
+        padIndex = pad.index;
+
+        showPadStatus(pad);
+
+    }
+
+
+    pad.buttons.forEach((button, i) => {
+
+        const part = padStandard ? padParts[i] : padChips[i];
+
+        if (part) {
+            part.classList.toggle("pressed", button.pressed);
+        }
+
+        // Triggers are analog: fill them by how far they're pulled.
+        if (padStandard && (i === 6 || i === 7)) {
+            setTriggerFill(i, button.value);
+        }
+
+        else if (!padStandard && part) {
+            part.firstChild.style.height = Math.round(button.value * 100) + "%";
+        }
+
+        if (button.pressed && !padPressed[i]) {
+            document.getElementById("padLast").textContent = padButtonName(pad, i);
+        }
+
+        padPressed[i] = button.pressed;
+
+    });
+
+
+    if (!padStandard) return;
+
+
+    const axis = n => {
+        const v = pad.axes[n] || 0;
+        return Math.abs(v) < 0.08 ? 0 : v;
+    };
+
+    const stickPressed = i => !!(pad.buttons[i] && pad.buttons[i].pressed);
+
+    moveStick("stickL", axis(0), axis(1), stickPressed(10));
+
+    moveStick("stickR", axis(2), axis(3), stickPressed(11));
+
+}
+
+
+window.addEventListener("gamepaddisconnected", event => {
+
+    if (event.gamepad.index === padIndex) {
+        padIndex = null;
+        showPadStatus(null);
+    }
+
+});
+
+
+requestAnimationFrame(pollPad);
+
+
+</script>
+"""
+
+
+# =========================================================
+# ADMIN PANEL (only rendered for admin accounts)
+# =========================================================
+
+ADMIN_NAV = """
+        <a
+            class="nav-item"
+            onclick="switchView('admin', this); loadAdmin();"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-shield"></use>
+            </svg>
+
+            <span>Admin Panel</span>
+
+        </a>
+"""
+
+
+ADMIN_VIEW = """
+        <!-- ADMIN PANEL -->
 
         <div
-            style="
-                display:flex;
-                height:100vh;
-                width:100vw;
-                justify-content:center;
-                align-items:center;
-                background:#09090b;
-                color:#22c55e;
-                font-size:1.5rem;
-                font-weight:bold;
-            "
+            id="view-admin"
+            class="view"
         >
-            Application Closed.
-            You can close this window.
+
+            <div class="card admin-card">
+
+
+                <div class="card-header">
+
+                    <h2>
+                        Admin Panel
+                    </h2>
+
+                    <button class="btn-sm" onclick="loadAdmin()">
+                        Refresh
+                    </button>
+
+                </div>
+
+
+                <div class="admin-stats" id="adminStats"></div>
+
+
+                <!-- EVENTS -->
+
+                <div class="admin-section-title">
+
+                    <h3>Events</h3>
+
+                    <div class="admin-tools">
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="eventName"
+                            value="Free Weekend"
+                            maxlength="60"
+                            placeholder="Event name"
+                        >
+
+                        <input
+                            class="form-input"
+                            type="datetime-local"
+                            id="eventStart"
+                            title="Start time. Leave empty to start now."
+                        >
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="eventHours"
+                            value="48"
+                            min="1"
+                            step="any"
+                            style="width: 90px"
+                            title="Length in hours"
+                        >
+
+                        <span class="muted">hours</span>
+
+                        <button class="btn-sm primary" onclick="createFreeEvent()">
+                            Create Event
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <p class="muted admin-note">
+                    Everyone gets free access while an event runs, and paid keys
+                    are paused. Leave the start empty to begin now.
+                </p>
+
+
+                <div class="table-wrap">
+
+                    <table class="admin-table">
+
+                        <thead>
+                            <tr>
+                                <th>Event</th>
+                                <th>Status</th>
+                                <th>Starts</th>
+                                <th>Ends</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="eventsBody"></tbody>
+
+                    </table>
+
+                </div>
+
+
+                <!-- USERS -->
+
+                <div class="admin-section-title">
+
+                    <h3>Users</h3>
+
+                    <div class="admin-tools">
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="userSearch"
+                            placeholder="Search username / HWID"
+                            oninput="renderUsers()"
+                        >
+
+                    </div>
+
+                </div>
+
+
+                <div class="table-wrap">
+
+                    <table class="admin-table">
+
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Time Left</th>
+                                <th>HWID</th>
+                                <th>Last Login</th>
+                                <th>Keys</th>
+                                <th>Time (days)</th>
+                                <th>Account</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="usersBody"></tbody>
+
+                    </table>
+
+                </div>
+
+
+                <!-- KEYS -->
+
+                <div class="admin-section-title">
+
+                    <h3>License Keys</h3>
+
+                    <div class="admin-tools">
+
+                        <select class="form-input" id="genType">
+                            <option value="day">Day</option>
+                            <option value="week">Week</option>
+                            <option value="month">Month</option>
+                        </select>
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="genCount"
+                            value="5"
+                            min="1"
+                            max="100"
+                            style="width: 80px"
+                        >
+
+                        <button class="btn-sm primary" onclick="generateKeys()">
+                            Generate
+                        </button>
+
+                        <select class="form-input" id="keyFilter" onchange="renderKeys()">
+                            <option value="all">All keys</option>
+                            <option value="unused">Unused</option>
+                            <option value="used">Used</option>
+                        </select>
+
+                    </div>
+
+                </div>
+
+
+                <textarea
+                    class="new-keys"
+                    id="newKeys"
+                    readonly
+                    style="display: none"
+                ></textarea>
+
+
+                <div class="table-wrap">
+
+                    <table class="admin-table">
+
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Type</th>
+                                <th>Created</th>
+                                <th>Redeemed By</th>
+                                <th>Redeemed At</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="keysBody"></tbody>
+
+                    </table>
+
+                </div>
+
+
+                <div class="form-msg" id="adminMsg"></div>
+
+
+            </div>
+
         </div>
+"""
 
-    `;
+
+ADMIN_JS = """
+<script>
 
 
-    await fetch(
-        "/api/shutdown",
-        {
-            method: "POST"
-        }
+let adminData = null;
+
+
+function el(tag, attrs, children) {
+
+    const node = document.createElement(tag);
+
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+
+        if (k === "text") node.textContent = v;
+        else if (k === "onclick") node.addEventListener("click", v);
+        else node.setAttribute(k, v);
+
+    });
+
+    (children || []).forEach(c => node.appendChild(c));
+
+    return node;
+
+}
+
+
+function fmtDate(ts) {
+
+    return ts
+        ? new Date(ts * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })
+        : "-";
+
+}
+
+
+function adminMsg(text, ok) {
+
+    showMsg(document.getElementById("adminMsg"), text, ok);
+
+}
+
+
+async function adminCall(action, data) {
+
+    const res = await postJSON("/api/admin/" + action, data);
+
+    if (!res.ok) {
+        adminMsg(res.body.error || "Admin request failed.", false);
+    }
+
+    return res;
+
+}
+
+
+async function loadAdmin() {
+
+    const res = await adminCall("overview", {});
+
+    if (!res.ok) return;
+
+    adminData = res.body;
+
+    renderStats();
+    renderEvents();
+    renderUsers();
+    renderKeys();
+
+}
+
+
+function renderStats() {
+
+    const s = adminData.stats;
+
+    const tiles = [
+        ["Users", s.users, ""],
+        ["Active Licenses", s.active_licenses, ""],
+        ["Banned", s.banned, ""],
+        ["Keys", s.keys_total,
+            "unused: " + s.keys_unused.day + "d / " + s.keys_unused.week + "w / " + s.keys_unused.month + "m"],
+    ];
+
+    const box = document.getElementById("adminStats");
+
+    box.replaceChildren(...tiles.map(([label, value, sub]) =>
+        el("div", { class: "stat-tile" }, [
+            el("div", { class: "license-label", text: label }),
+            el("div", { class: "stat-value", text: String(value) }),
+            el("div", { class: "stat-sub", text: sub }),
+        ])
+    ));
+
+}
+
+
+function renderUsers() {
+
+    const body = document.getElementById("usersBody");
+
+    const q = document.getElementById("userSearch").value.trim().toLowerCase();
+
+    const users = adminData.users.filter(u =>
+        !q ||
+        u.username.toLowerCase().includes(q) ||
+        (u.hwid || "").toLowerCase().includes(q)
     );
+
+
+    if (!users.length) {
+
+        body.replaceChildren(
+            el("tr", { class: "empty-row" }, [el("td", { colspan: "7", text: "No users found." })])
+        );
+
+        return;
+
+    }
+
+
+    body.replaceChildren(...users.map(u => {
+
+        const badges = [];
+
+        if (u.is_admin) badges.push(el("span", { class: "badge admin", text: "Admin" }));
+
+        if (u.banned) badges.push(el("span", { class: "badge banned", text: "Banned" }));
+        else if (u.remaining_seconds > 0) badges.push(el("span", { class: "badge active", text: "Active" }));
+        else badges.push(el("span", { class: "badge expired", text: "Expired" }));
+
+
+        const days = el("input", {
+            class: "form-input",
+            type: "number",
+            step: "any",
+            value: "1",
+            title: "Days (decimals allowed, e.g. 0.5)"
+        });
+
+        const timeActions = el("div", { class: "row-actions" }, [
+            days,
+            el("button", { class: "btn-sm", text: "Add",
+                onclick: () => changeTime(u.username, "addtime", Number(days.value)) }),
+            el("button", { class: "btn-sm", text: "Take",
+                onclick: () => changeTime(u.username, "addtime", -Number(days.value)) }),
+            el("button", { class: "btn-sm", text: "Set",
+                onclick: () => changeTime(u.username, "settime", Number(days.value)) }),
+        ]);
+
+
+        const banBtn = el("button", {
+            class: "btn-sm danger",
+            text: u.banned ? "Unban" : "Ban",
+            onclick: () => setBan(u.username, !u.banned)
+        });
+
+        if (u.is_admin) banBtn.disabled = true;
+
+
+        const accountActions = el("div", { class: "row-actions" }, [
+            banBtn,
+            el("button", { class: "btn-sm", text: "Reset HWID",
+                onclick: () => resetHwid(u.username) }),
+        ]);
+
+
+        return el("tr", {}, [
+            el("td", { title: "Joined " + fmtDate(u.created_at) }, [
+                el("span", { class: "online-dot" + (u.online ? " on" : ""),
+                    title: u.online ? "Has an active session" : "No active session" }),
+                el("span", { class: "user-name", text: u.username }),
+                ...badges,
+            ]),
+            el("td", { class: "mono", text: formatRemaining(u.remaining_seconds) }),
+            el("td", { class: "mono muted hwid-cell", title: u.hwid || "", text: u.hwid || "-" }),
+            el("td", { class: "muted", text: fmtDate(u.last_login) }),
+            el("td", { text: String(u.keys_redeemed) }),
+            el("td", {}, [timeActions]),
+            el("td", {}, [accountActions]),
+        ]);
+
+    }));
+
+}
+
+
+function renderKeys() {
+
+    const body = document.getElementById("keysBody");
+
+    const filter = document.getElementById("keyFilter").value;
+
+    const keys = adminData.keys.filter(k =>
+        filter === "all" ||
+        (filter === "unused" && !k.redeemed_by) ||
+        (filter === "used" && k.redeemed_by)
+    );
+
+
+    if (!keys.length) {
+
+        body.replaceChildren(
+            el("tr", { class: "empty-row" }, [el("td", { colspan: "6", text: "No keys." })])
+        );
+
+        return;
+
+    }
+
+
+    body.replaceChildren(...keys.map(k => {
+
+        const actions = [];
+
+        if (!k.redeemed_by) {
+
+            actions.push(el("button", { class: "btn-sm", text: "Copy",
+                onclick: () => navigator.clipboard.writeText(k.key).then(() => adminMsg("Copied " + k.key, true)) }));
+
+            actions.push(el("button", { class: "btn-sm danger", text: "Delete",
+                onclick: () => deleteKey(k.key) }));
+
+        }
+
+
+        return el("tr", {}, [
+            el("td", { class: "mono", text: k.key }),
+            el("td", { text: k.key_type + " (" + k.duration_days + "d)" }),
+            el("td", { class: "muted", text: fmtDate(k.created_at) }),
+            el("td", { text: k.redeemed_by || "-" }),
+            el("td", { class: "muted", text: fmtDate(k.redeemed_at) }),
+            el("td", {}, [el("div", { class: "row-actions" }, actions)]),
+        ]);
+
+    }));
+
+}
+
+
+function renderEvents() {
+
+    const body = document.getElementById("eventsBody");
+
+    const events = adminData.events || [];
+
+
+    if (!events.length) {
+
+        body.replaceChildren(
+            el("tr", { class: "empty-row" }, [el("td", { colspan: "5", text: "No events yet." })])
+        );
+
+        return;
+
+    }
+
+
+    const labels = { live: "Live", upcoming: "Upcoming", ended: "Ended" };
+
+    body.replaceChildren(...events.map(e => {
+
+        const actions = [];
+
+        if (e.status === "live") {
+            actions.push(el("button", { class: "btn-sm danger", text: "End Now",
+                onclick: () => endFreeEvent(e, "End " + e.name + " now? Paused keys resume straight away.") }));
+        }
+
+        if (e.status === "upcoming") {
+            actions.push(el("button", { class: "btn-sm danger", text: "Cancel",
+                onclick: () => endFreeEvent(e, "Cancel " + e.name + "?") }));
+        }
+
+
+        return el("tr", {}, [
+            el("td", { class: "user-name", text: e.name }),
+            el("td", {}, [el("span", { class: "badge " + (e.status === "ended" ? "expired" : e.status),
+                text: labels[e.status] })]),
+            el("td", { class: "muted", text: fmtDate(e.start_at) }),
+            el("td", { class: "muted", text: fmtDate(e.end_at) }),
+            el("td", {}, [el("div", { class: "row-actions" }, actions)]),
+        ]);
+
+    }));
+
+}
+
+
+async function createFreeEvent() {
+
+    const start = document.getElementById("eventStart").value;
+
+    const hours = Number(document.getElementById("eventHours").value);
+
+    if (!(hours > 0)) {
+        adminMsg("Enter how many hours the event lasts.", false);
+        return;
+    }
+
+
+    // datetime-local is in this PC's local time; send it as a
+    // unix timestamp so the server doesn't need to know the zone.
+    const res = await adminCall("event_create", {
+        name: document.getElementById("eventName").value,
+        start_at: start ? Math.floor(new Date(start).getTime() / 1000) : 0,
+        hours: hours
+    });
+
+    if (res.ok) {
+        adminMsg("Event created.", true);
+        document.getElementById("eventStart").value = "";
+        loadAdmin();
+        syncLicense();
+    }
+
+}
+
+
+async function endFreeEvent(e, question) {
+
+    if (!confirm(question)) return;
+
+    const res = await adminCall("event_end", { id: e.id });
+
+    if (res.ok) {
+        adminMsg(res.body.message, true);
+        loadAdmin();
+        syncLicense();
+    }
+
+}
+
+
+async function changeTime(username, action, days) {
+
+    if (!isFinite(days)) {
+        adminMsg("Enter a number of days.", false);
+        return;
+    }
+
+    const res = await adminCall(action, { username: username, days: days });
+
+    if (res.ok) {
+        adminMsg(username + " now has " + formatRemaining(res.body.remaining_seconds) + ".", true);
+        loadAdmin();
+        syncLicense();
+    }
+
+}
+
+
+async function setBan(username, banned) {
+
+    if (banned && !confirm("Ban " + username + "? They will be logged out and locked out.")) return;
+
+    const res = await adminCall("ban", { username: username, banned: banned });
+
+    if (res.ok) {
+        adminMsg(username + (banned ? " banned." : " unbanned."), true);
+        loadAdmin();
+    }
+
+}
+
+
+async function resetHwid(username) {
+
+    if (!confirm("Reset HWID for " + username + "? Their next login will lock to a new PC.")) return;
+
+    const res = await adminCall("resethwid", { username: username });
+
+    if (res.ok) {
+        adminMsg("HWID reset for " + username + ".", true);
+        loadAdmin();
+    }
+
+}
+
+
+async function generateKeys() {
+
+    const res = await adminCall("genkeys", {
+        key_type: document.getElementById("genType").value,
+        count: Number(document.getElementById("genCount").value)
+    });
+
+    if (!res.ok) return;
+
+
+    const box = document.getElementById("newKeys");
+
+    box.value = res.body.keys.join("\\n");
+
+    box.style.display = "block";
+
+    box.select();
+
+
+    adminMsg("Generated " + res.body.keys.length + " key(s). They're selected above, ready to copy.", true);
+
+    loadAdmin();
+
+}
+
+
+async function deleteKey(key) {
+
+    if (!confirm("Delete unused key " + key + "?")) return;
+
+    const res = await adminCall("deletekey", { key: key });
+
+    if (res.ok) {
+        adminMsg("Deleted " + key + ".", true);
+        loadAdmin();
+    }
 
 }
 
 
 </script>
+"""
+
+
+ADMIN_ACTIONS = {
+    "overview", "addtime", "settime", "ban", "resethwid", "genkeys", "deletekey",
+    "event_create", "event_end",
+}
+
+
+# =========================================================
+# PAGES
+# =========================================================
+
+def render_login():
+
+    message = check_integrity()
+
+    status_text, status_class = build_status()
+
+    banner = (
+        f'<div class="integrity-banner" id="integrityMsg">{html_escape(message)}</div>'
+        if message else ""
+    )
+
+    return (
+        LOGIN_PAGE
+        .replace("__COMMON_CSS__", COMMON_CSS)
+        .replace("__COMMON_JS__", COMMON_JS)
+        .replace("__INTEGRITY__", banner)
+        .replace("__HWID__", html_escape(cached_hwid()))
+        .replace("__BUILD_STATUS__", html_escape(status_text))
+        .replace("__BUILD_CLASS__", status_class)
+    )
+
+
+def toggle_html(input_id, status_id, feature, active):
+
+    checked = "checked" if active else ""
+
+    status_text = "Enabled" if active else "Disabled"
+
+    status_class = "enabled" if active else "disabled"
+
+
+    return f"""
+                    <div class="card-toggle">
+
+                        <label class="switch">
+
+                            <input
+                                type="checkbox"
+                                id="{input_id}"
+                                {checked}
+                                onchange="toggleFeature(this, '{feature}', '{status_id}')"
+                            >
+
+                            <span class="slider"></span>
+
+                        </label>
+
+
+                        <span
+                            class="status-text {status_class}"
+                            id="{status_id}"
+                        >
+                            {status_text}
+                        </span>
+
+                    </div>
+    """
+
+
+@app.route("/")
+def home():
+
+    if not logged_in():
+        return render_login()
+
+
+    sys_os = f"{platform.system()} {platform.release()}"
+
+    sys_node = platform.node()
+
+    sys_processor = platform.processor() or "Unknown"
+
+    public_ip = get_public_ip()
+
+    hwid = cached_hwid()
+
+    build_text, build_class = build_status()
+
+
+    macro_toggle = toggle_html(
+        "macroToggle", "macroStatus", "macro", config["active"]
+    )
+
+    auto_build_toggle = toggle_html(
+        "autoBuildToggle", "autoBuildStatus", "auto_build", config["auto_build_active"]
+    )
+
+
+    username = html_escape(license_state["username"] or "")
+
+    remaining = int(remaining_seconds())
+
+    use_pad = config["trigger_source"] == "controller"
+
+    keyboard_tab, controller_tab = ("", "active") if use_pad else ("active", "")
+
+    keyboard_hidden, controller_hidden = ("hidden", "") if use_pad else ("", "hidden")
+
+    pad_hint = (
+        "Click Bind, then press a button on your controller."
+        if xinput is not None else
+        "Controller triggers need Windows. Binding works here, but the macro won't fire."
+    )
+
+    events_json = html_escape(json.dumps(event_info()))
+
+    locked = "" if remaining > 0 else "locked"
+
+
+    is_admin = license_state["is_admin"]
+
+    admin_nav = ADMIN_NAV if is_admin else ""
+
+    admin_view = ADMIN_VIEW if is_admin else ""
+
+    admin_js = ADMIN_JS if is_admin else ""
+
+
+    return f"""
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Amos Solutions</title>
+
+    {COMMON_CSS}
+
+</head>
+
+
+<body>
+
+
+<!-- =====================================================
+     SIDEBAR
+     ===================================================== -->
+
+<nav class="sidebar" id="sidebar">
+
+    <div class="sidebar-header">
+
+        <a href="#" class="sidebar-logo">
+
+            <svg width="28" height="28">
+                <use href="#icon-zap"></use>
+            </svg>
+
+            <span>Amos Solutions</span>
+
+        </a>
+
+    </div>
+
+
+    <div class="sidebar-nav">
+
+        <a
+            class="nav-item active"
+            onclick="switchView('dashboard', this)"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-home"></use>
+            </svg>
+
+            <span>Dashboard</span>
+
+        </a>
+
+
+        {admin_nav}
+
+
+        <a
+            class="nav-item"
+            onclick="switchView('settings', this)"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-settings"></use>
+            </svg>
+
+            <span>Hardware Info</span>
+
+        </a>
+
+
+        <a
+            class="nav-item logout-btn"
+            onclick="logout()"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-logout"></use>
+            </svg>
+
+            <span>Logout</span>
+
+        </a>
+
+
+        <a
+            class="nav-item logout-btn exit-btn"
+            onclick="exitApp()"
+        >
+
+            <svg width="20" height="20">
+                <use href="#icon-power"></use>
+            </svg>
+
+            <span>Exit</span>
+
+        </a>
+
+    </div>
+
+</nav>
+
+
+<!-- =====================================================
+     MAIN
+     ===================================================== -->
+
+<main class="main-wrapper">
+
+
+    <!-- HEADER -->
+
+    <header class="topbar">
+
+        <div class="topbar-left">
+
+
+            <!-- MENU -->
+
+            <button
+                class="menu-toggle"
+                onclick="toggleSidebar()"
+            >
+
+                <svg width="24" height="24">
+                    <use href="#icon-menu"></use>
+                </svg>
+
+            </button>
+
+
+            <!-- BRAND -->
+
+            <div class="brand-title">
+                Amos Solutions
+            </div>
+
+
+        </div>
+
+    </header>
+
+
+    <!-- =================================================
+         VIEWS
+         ================================================= -->
+
+    <div class="view-container">
+
+
+        <!-- DASHBOARD -->
+
+        <div
+            id="view-dashboard"
+            class="view active"
+        >
+
+            <div class="dashboard-grid">
+
+
+                <!-- LICENSE -->
+
+                <div class="card license-card">
+
+
+                    <div class="card-header">
+
+                        <h2>
+                            License
+                        </h2>
+
+                        <span class="license-user">
+                            {username}
+                        </span>
+
+                    </div>
+
+
+                    <div class="event-banner" id="eventBanner"></div>
+
+
+                    <div class="license-row">
+
+
+                        <div>
+
+                            <div class="license-label" id="licenseLabel">
+                                Time Remaining
+                            </div>
+
+                            <div
+                                class="license-time"
+                                id="licenseTime"
+                                data-remaining="{remaining}"
+                                data-events="{events_json}"
+                            >
+                                --
+                            </div>
+
+                        </div>
+
+
+                        <form
+                            class="redeem-form"
+                            onsubmit="redeemKey(event)"
+                        >
+
+                            <input
+                                class="form-input"
+                                type="text"
+                                id="license_key"
+                                placeholder="Enter day / week / month key"
+                                required
+                            >
+
+                            <button
+                                type="submit"
+                                class="btn-primary"
+                                id="redeemBtn"
+                            >
+                                Redeem
+                            </button>
+
+                        </form>
+
+
+                    </div>
+
+
+                    <div class="form-msg" id="redeemMsg"></div>
+
+
+                </div>
+
+
+                <!-- HOTKEY -->
+
+                <div class="card lockable {locked}">
+
+
+                    <div class="card-header">
+
+                        <h2>
+                            Hotkey Configuration
+                        </h2>
+
+                        {macro_toggle}
+
+                    </div>
+
+
+                    <form
+                        id="configForm"
+                        onsubmit="saveSettings(event)"
+                    >
+
+
+                        <label>
+                            Trigger:
+                        </label>
+
+                        <div class="auth-tabs bind-tabs">
+
+                            <button type="button" class="auth-tab {keyboard_tab}" id="srcKeyboard"
+                                onclick="setTriggerSource('keyboard')">
+                                Keyboard
+                            </button>
+
+                            <button type="button" class="auth-tab {controller_tab}" id="srcController"
+                                onclick="setTriggerSource('controller')">
+                                Controller
+                            </button>
+
+                        </div>
+
+                        <div id="keyboardBind" {keyboard_hidden}>
+
+                            <input
+                                class="form-input"
+                                type="text"
+                                id="trigger_key"
+                                value="{html_escape(config['trigger_key'])}"
+                                maxlength="1"
+                                placeholder="Key"
+                            >
+
+                        </div>
+
+                        <div id="controllerBind" {controller_hidden}>
+
+                            <div class="bind-row">
+
+                                <input
+                                    class="form-input"
+                                    type="text"
+                                    id="trigger_pad"
+                                    value="{html_escape(config['trigger_pad'])}"
+                                    readonly
+                                >
+
+                                <button type="button" class="btn-sm" id="padBindBtn" onclick="bindPad('trigger')">
+                                    Bind
+                                </button>
+
+                            </div>
+
+                            <div class="bind-hint" id="padBindMsg">
+                                {pad_hint}
+                            </div>
+
+                        </div>
+
+
+                        <label>
+                            Target:
+                        </label>
+
+                        <div id="targetKeyboard" {keyboard_hidden}>
+
+                            <input
+                                class="form-input"
+                                type="text"
+                                id="target_key"
+                                value="{html_escape(config['target_key'])}"
+                                maxlength="1"
+                                placeholder="Key"
+                            >
+
+                        </div>
+
+                        <div id="targetController" {controller_hidden}>
+
+                            <div class="bind-row">
+
+                                <input
+                                    class="form-input"
+                                    type="text"
+                                    id="target_pad"
+                                    value="{html_escape(config['target_pad'])}"
+                                    readonly
+                                >
+
+                                <button type="button" class="btn-sm" id="targetBindBtn" onclick="bindPad('target')">
+                                    Bind
+                                </button>
+
+                            </div>
+
+                            <div class="bind-hint" id="targetBindMsg">
+                                Pressed on a virtual controller the game sees.
+                            </div>
+
+                        </div>
+
+
+                        <label>
+                            Delay (ms):
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="delay_ms"
+                            value="{config['delay_ms']}"
+                            min="0"
+                            required
+                        >
+
+
+                        <button
+                            type="submit"
+                            class="btn-primary"
+                            id="saveBtn"
+                        >
+                            Save Settings
+                        </button>
+
+
+                    </form>
+
+
+                </div>
+
+
+                <!-- AUTO BUILD -->
+
+                <div class="card lockable {locked}">
+
+
+                    <div class="card-header">
+
+                        <h2>
+                            Auto Build
+                        </h2>
+
+                        {auto_build_toggle}
+
+                    </div>
+
+
+                    <form
+                        id="autoBuildForm"
+                        onsubmit="saveAutoBuild(event)"
+                    >
+
+
+                        <label>
+                            Keybind:
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="text"
+                            id="auto_build_key"
+                            value="{html_escape(config['auto_build_key'])}"
+                            maxlength="1"
+                            required
+                        >
+
+
+                        <label>
+                            Delay (ms):
+                        </label>
+
+                        <input
+                            class="form-input"
+                            type="number"
+                            id="auto_build_delay_ms"
+                            value="{config['auto_build_delay_ms']}"
+                            min="1"
+                            required
+                        >
+
+
+                        <button
+                            type="submit"
+                            class="btn-primary"
+                            id="autoBuildSaveBtn"
+                        >
+                            Save Settings
+                        </button>
+
+
+                    </form>
+
+
+                </div>
+
+
+                <!-- CONTROLLER TEST -->
+
+                <div class="card controller-card">
+
+
+                    <div class="card-header">
+
+                        <h2>
+                            Controller
+                        </h2>
+
+                        <span class="pad-status" id="padStatus">
+                            No controller
+                        </span>
+
+                    </div>
+
+
+                    <div class="pad-name" id="padName">
+                        Plug in a controller and press any button on it.
+                    </div>
+
+
+                    <svg class="pad-svg" id="padSvg" viewBox="0 0 440 290" aria-label="Controller">
+
+                        <g class="pad-part" data-btn="6">
+                            <rect x="92" y="10" width="54" height="32" rx="9"/>
+                            <rect class="pad-trigger-fill" id="padFill6" x="94" y="40" width="50" height="0" rx="7"/>
+                            <text x="119" y="26">LT</text>
+                        </g>
+
+                        <g class="pad-part" data-btn="7">
+                            <rect x="294" y="10" width="54" height="32" rx="9"/>
+                            <rect class="pad-trigger-fill" id="padFill7" x="296" y="40" width="50" height="0" rx="7"/>
+                            <text x="321" y="26">RT</text>
+                        </g>
+
+                        <g class="pad-part" data-btn="4">
+                            <rect x="74" y="48" width="92" height="16" rx="8"/>
+                            <text x="120" y="56">LB</text>
+                        </g>
+
+                        <g class="pad-part" data-btn="5">
+                            <rect x="274" y="48" width="92" height="16" rx="8"/>
+                            <text x="320" y="56">RB</text>
+                        </g>
+
+                        <path class="pad-body" d="M 120 70 C 150 58, 290 58, 320 70 C 360 78, 385 100, 398 150 C 412 205, 420 250, 395 268 C 372 284, 345 270, 330 245 C 318 225, 300 212, 280 212 L 160 212 C 140 212, 122 225, 110 245 C 95 270, 68 284, 45 268 C 20 250, 28 205, 42 150 C 55 100, 80 78, 120 70 Z"/>
+
+                        <g class="pad-part" data-btn="10">
+                            <circle cx="135" cy="125" r="27"/>
+                        </g>
+                        <circle class="pad-thumb" id="stickL" cx="135" cy="125" r="13"/>
+
+                        <g class="pad-part" data-btn="11">
+                            <circle cx="265" cy="180" r="25"/>
+                        </g>
+                        <circle class="pad-thumb" id="stickR" cx="265" cy="180" r="12"/>
+
+                        <rect class="pad-static" x="168" y="173" width="14" height="14"/>
+                        <g class="pad-part" data-btn="12"><rect x="168" y="157" width="14" height="16" rx="3"/></g>
+                        <g class="pad-part" data-btn="13"><rect x="168" y="187" width="14" height="16" rx="3"/></g>
+                        <g class="pad-part" data-btn="14"><rect x="152" y="173" width="16" height="14" rx="3"/></g>
+                        <g class="pad-part" data-btn="15"><rect x="182" y="173" width="16" height="14" rx="3"/></g>
+
+                        <g class="pad-part" data-btn="8"><rect x="184" y="120" width="20" height="11" rx="5.5"/></g>
+                        <g class="pad-part" data-btn="9"><rect x="236" y="120" width="20" height="11" rx="5.5"/></g>
+                        <g class="pad-part" data-btn="16"><circle cx="220" cy="92" r="12"/></g>
+
+                        <g class="pad-part pad-face-y" data-btn="3">
+                            <circle cx="305" cy="100" r="12"/>
+                            <text x="305" y="100">Y</text>
+                        </g>
+                        <g class="pad-part pad-face-x" data-btn="2">
+                            <circle cx="280" cy="125" r="12"/>
+                            <text x="280" y="125">X</text>
+                        </g>
+                        <g class="pad-part pad-face-b" data-btn="1">
+                            <circle cx="330" cy="125" r="12"/>
+                            <text x="330" y="125">B</text>
+                        </g>
+                        <g class="pad-part pad-face-a" data-btn="0">
+                            <circle cx="305" cy="150" r="12"/>
+                            <text x="305" y="150">A</text>
+                        </g>
+
+                    </svg>
+
+
+                    <div class="pad-buttons" id="padButtons" hidden></div>
+
+
+                    <div class="pad-last">
+                        Last input: <span id="padLast">-</span>
+                    </div>
+
+
+                </div>
+
+
+            </div>
+
+        </div>
+
+
+        {admin_view}
+
+
+        <!-- HARDWARE INFO -->
+
+        <div
+            id="view-settings"
+            class="view"
+        >
+
+            <div class="card">
+
+
+                <h2>
+                    System Information
+                </h2>
+
+
+                <label>
+                    Public IPv4 Address
+                </label>
+
+                <div class="info-box">
+                    {html_escape(public_ip)}
+                </div>
+
+
+                <label>
+                    Hardware ID (HWID)
+                </label>
+
+                <div class="info-box">
+                    {html_escape(hwid)}
+                </div>
+
+
+                <label>
+                    App Build
+                </label>
+
+                <div class="info-box">
+                    <span class="build-status {build_class}">{html_escape(build_text)}</span>
+                    <br>
+                    {app_hash()}
+                </div>
+
+
+                <label>
+                    Operating System
+                </label>
+
+                <div class="info-box">
+                    {html_escape(sys_os)}
+                </div>
+
+
+                <label>
+                    Hostname
+                </label>
+
+                <div class="info-box">
+                    {html_escape(sys_node)}
+                </div>
+
+
+                <label>
+                    Processor
+                </label>
+
+                <div class="info-box">
+                    {html_escape(sys_processor)}
+                </div>
+
+
+            </div>
+
+        </div>
+
+
+    </div>
+
+</main>
+
+
+{COMMON_JS}
+
+{DASHBOARD_JS}
+
+{admin_js}
 
 
 </body>
@@ -1455,11 +5056,184 @@ async function logout() {
 
 
 # =========================================================
+# API - ACCOUNT / LICENSE
+# =========================================================
+
+def account_request(path):
+
+    data = request.get_json(silent=True) or {}
+
+    username = str(data.get("username", "")).strip()
+
+    password = str(data.get("password", ""))
+
+
+    if not username or not password:
+        return jsonify({"error": "Enter a username and password."}), 400
+
+
+    result, err, status = license_request(
+        path, {"username": username, "password": password}
+    )
+
+    if result is None:
+        return jsonify({"error": err}), status or 502
+
+
+    apply_license(result, token=result["token"])
+
+    return jsonify({"status": "success"})
+
+
+@app.route("/api/login", methods=["POST"])
+def account_login():
+
+    return account_request("/api/login")
+
+
+@app.route("/api/register", methods=["POST"])
+def account_register():
+
+    return account_request("/api/register")
+
+
+@app.route("/api/license", methods=["POST"])
+def license_status():
+
+    if not logged_in():
+        return jsonify({"logged_in": False}), 401
+
+
+    # Around the start or end of an event, fetch fresh numbers from
+    # the server instead of waiting for the next background sync.
+    info = event_info()
+
+    if (
+        (info["event"] and info["event"]["remaining_seconds"] <= 0)
+        or (info["next_event"] and info["next_event"]["starts_in"] <= 0)
+    ):
+
+        data, err, status = license_request(
+            "/api/status", {"token": license_state["token"]}
+        )
+
+        if data:
+            apply_license(data)
+
+
+    return jsonify({
+        "logged_in": True,
+        "username": license_state["username"],
+        "remaining_seconds": remaining_seconds(),
+        **event_info(),
+    })
+
+
+@app.route("/api/logout", methods=["POST"])
+def account_logout():
+
+    token = license_state["token"]
+
+    clear_license()
+
+
+    # Also end the session on the license server. The local
+    # logout already happened, so a failure here is ignored.
+    if token:
+        license_request("/api/logout", {"token": token})
+
+
+    return jsonify({"status": "success"})
+
+
+@app.route("/api/admin/<action>", methods=["POST"])
+def admin_action(action):
+
+    # Forwards admin requests to the license server, which checks
+    # that this session really belongs to an admin.
+    if action not in ADMIN_ACTIONS:
+        return jsonify({"error": "Unknown admin action."}), 404
+
+    if not (logged_in() and license_state["is_admin"]):
+        return jsonify({"error": "Admin access required."}), 403
+
+
+    data = request.get_json(silent=True) or {}
+
+    result, err, status = license_request(
+        "/api/admin/" + action, {**data, "token": license_state["token"]}
+    )
+
+    if result is None:
+        return jsonify({"error": err}), status or 502
+
+
+    # If the admin changed their own time or an event, refresh the
+    # local license right away instead of waiting for the next sync.
+    if (
+        action.startswith("event_")
+        or str(data.get("username", "")).lower() == (license_state["username"] or "").lower()
+    ):
+
+        own, _, _ = license_request(
+            "/api/status", {"token": license_state["token"]}
+        )
+
+        if own:
+            apply_license(own)
+
+
+    return jsonify(result)
+
+
+@app.route("/api/redeem", methods=["POST"])
+def redeem_key():
+
+    if not logged_in():
+        return jsonify({"error": "Please log in first."}), 401
+
+
+    data = request.get_json(silent=True) or {}
+
+    key = str(data.get("key", "")).strip()
+
+    if not key:
+        return jsonify({"error": "Enter a license key."}), 400
+
+
+    result, err, status = license_request(
+        "/api/redeem", {"token": license_state["token"], "key": key}
+    )
+
+    if result is None:
+
+        if status in (401, 403):
+            clear_license()
+
+        return jsonify({"error": err}), status or 502
+
+
+    apply_license(result)
+
+    return jsonify({
+        "status": "success",
+        "added_days": result.get("added_days", 0),
+        "remaining_seconds": remaining_seconds(),
+    })
+
+
+# =========================================================
 # API - UPDATE CONFIG
 # =========================================================
 
 @app.route("/api/update", methods=["POST"])
 def update_config():
+
+    if not license_active():
+        return jsonify({
+            "error": "No license time remaining."
+        }), 403
+
 
     data = request.json
 
@@ -1467,6 +5241,45 @@ def update_config():
         return jsonify({
             "error": "Invalid JSON"
         }), 400
+
+
+    source = data.get("trigger_source", config["trigger_source"])
+
+    pad = data.get("trigger_pad", config["trigger_pad"])
+
+    if source not in ("keyboard", "controller"):
+        return jsonify({"error": "Pick keyboard or controller."}), 400
+
+    target_pad = data.get("target_pad", config["target_pad"])
+
+    if source == "controller":
+
+        if pad not in PAD_BUTTONS:
+            return jsonify({"error": "Bind a trigger button first."}), 400
+
+        if target_pad not in PAD_BUTTONS:
+            return jsonify({"error": "Bind a target button first."}), 400
+
+        if target_pad == pad:
+            return jsonify({"error": "The trigger and target can't be the same button."}), 400
+
+        # Set up the virtual controller now so a missing driver shows
+        # up here instead of silently mid-game.
+        try:
+            virtual_pad()
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 400
+
+
+    # Let go of anything the old binding is holding down.
+    trigger_up()
+
+
+    config["trigger_source"] = source
+
+    config["trigger_pad"] = pad
+
+    config["target_pad"] = target_pad
 
 
     config["trigger_key"] = (
@@ -1505,6 +5318,34 @@ def update_config():
         pass
 
 
+    config["auto_build_key"] = (
+        str(
+            data.get(
+                "auto_build_key",
+                config["auto_build_key"]
+            )
+        )
+        .lower()
+    )
+
+
+    try:
+
+        config["auto_build_delay_ms"] = max(
+            1.0,
+            float(
+                data.get(
+                    "auto_build_delay_ms",
+                    config["auto_build_delay_ms"]
+                )
+            )
+        )
+
+    except (ValueError, TypeError):
+
+        pass
+
+
     return jsonify({
         "status": "success"
     })
@@ -1519,9 +5360,30 @@ def toggle_macro():
 
     data = request.json
 
-    if data and "active" in data:
+    feature_keys = {
+        "macro": "active",
+        "auto_build": "auto_build_active",
+    }
 
-        config["active"] = bool(
+    key = feature_keys.get(
+        (data or {}).get("feature", "macro")
+    )
+
+    if key is None:
+        return jsonify({
+            "error": "Unknown feature"
+        }), 400
+
+
+    if "active" in data:
+
+        if data["active"] and not license_active():
+            return jsonify({
+                "error": "No license time remaining."
+            }), 403
+
+
+        config[key] = bool(
             data["active"]
         )
 
@@ -1530,7 +5392,7 @@ def toggle_macro():
         "status": "success",
 
         "active":
-            config["active"]
+            config[key]
     })
 
 
@@ -1540,6 +5402,15 @@ def toggle_macro():
 
 @app.route("/api/shutdown", methods=["POST"])
 def shutdown():
+
+    # End the license session too, so it isn't left open.
+    token = license_state["token"]
+
+    clear_license()
+
+    if token:
+        license_request("/api/logout", {"token": token})
+
 
     def close_server():
 
@@ -1573,7 +5444,7 @@ def run_server():
 
     app.run(
         host="127.0.0.1",
-        port=5000,
+        port=APP_PORT,
         debug=False,
         use_reloader=False
     )
@@ -1583,61 +5454,343 @@ def run_server():
 # KEYBOARD LISTENER
 # =========================================================
 
-def on_press(key):
+def auto_build_loop():
 
-    global is_pressed
+    # While auto build is enabled, press the
+    # keybind every auto_build_delay_ms.
+    while True:
+
+        if not (config["auto_build_active"] and license_active()):
+
+            time.sleep(0.05)
+
+            continue
 
 
-    if not config["active"]:
+        key = config["auto_build_key"]
+
+        try:
+
+            controller.press(key)
+
+            controller.release(key)
+
+        except Exception:
+
+            pass
+
+
+        time.sleep(
+            config["auto_build_delay_ms"] / 1000.0
+        )
+
+
+def press_output():
+
+    # Presses the target: a keyboard key, or in controller mode a
+    # button on the virtual controller. Returns what was pressed.
+    if config["trigger_source"] == "controller":
+
+        name = config["target_pad"]
+
+        try:
+            set_pad_button(name, True)
+        except RuntimeError as e:
+            print(e)
+            return None
+
+        return ("pad", name)
+
+
+    controller.press(config["target_key"])
+
+    return ("key", config["target_key"])
+
+
+def release_output(output):
+
+    kind, name = output
+
+    if kind == "pad":
+
+        try:
+            set_pad_button(name, False)
+        except RuntimeError as e:
+            print(e)
+
+    else:
+
+        controller.release(name)
+
+
+def trigger_down():
+
+    global is_pressed, held_output
+
+
+    if is_pressed or not (config["active"] and license_active()):
         return
 
 
-    try:
-
-        if (
-            key.char == config["trigger_key"]
-            and not is_pressed
-        ):
-
-            is_pressed = True
+    is_pressed = True
 
 
-            time.sleep(
-                config["delay_ms"] / 1000.0
-            )
+    time.sleep(
+        config["delay_ms"] / 1000.0
+    )
 
 
-            # Make sure the macro wasn't
-            # disabled during the delay.
-            if config["active"]:
+    with press_lock:
 
-                controller.press(
-                    config["target_key"]
-                )
+        # Make sure the trigger wasn't let go, the macro disabled or
+        # the license run out during the delay.
+        if not (is_pressed and config["active"] and license_active()):
+            return
 
-    except AttributeError:
+        held_output = press_output()
 
-        pass
+
+def trigger_up():
+
+    global is_pressed, held_output
+
+
+    with press_lock:
+
+        is_pressed = False
+
+        if held_output:
+            release_output(held_output)
+            held_output = None
+
+
+def on_press(key):
+
+    if config["trigger_source"] != "keyboard":
+        return
+
+    if getattr(key, "char", None) == config["trigger_key"]:
+        trigger_down()
 
 
 def on_release(key):
 
-    global is_pressed
+    if config["trigger_source"] != "keyboard":
+        return
+
+    if getattr(key, "char", None) == config["trigger_key"]:
+        trigger_up()
 
 
-    try:
+# =========================================================
+# CONTROLLER LISTENER
+# =========================================================
+#
+# Reads Xbox-style controllers through Windows' XInput, which keeps
+# working while a game has focus (the browser's Gamepad API doesn't).
+# PlayStation controllers show up here through Steam Input or
+# DS4Windows. Names match the dashboard's controller test card.
 
-        if key.char == config["trigger_key"]:
+PAD_BUTTONS = {
+    "Up": 0x0001,
+    "Down": 0x0002,
+    "Left": 0x0004,
+    "Right": 0x0008,
+    "Menu": 0x0010,
+    "View": 0x0020,
+    "LS": 0x0040,
+    "RS": 0x0080,
+    "LB": 0x0100,
+    "RB": 0x0200,
+    "A": 0x1000,
+    "B": 0x2000,
+    "X": 0x4000,
+    "Y": 0x8000,
+    "LT": None,
+    "RT": None,
+}
 
-            is_pressed = False
+PAD_TRIGGER_THRESHOLD = 30
 
-            controller.release(
-                config["target_key"]
+PAD_POLL_SECONDS = 0.004
+
+
+class XInputGamepad(ctypes.Structure):
+
+    _fields_ = [
+        ("wButtons", ctypes.c_ushort),
+        ("bLeftTrigger", ctypes.c_ubyte),
+        ("bRightTrigger", ctypes.c_ubyte),
+        ("sThumbLX", ctypes.c_short),
+        ("sThumbLY", ctypes.c_short),
+        ("sThumbRX", ctypes.c_short),
+        ("sThumbRY", ctypes.c_short),
+    ]
+
+
+class XInputState(ctypes.Structure):
+
+    _fields_ = [
+        ("dwPacketNumber", ctypes.c_uint),
+        ("Gamepad", XInputGamepad),
+    ]
+
+
+def load_xinput():
+
+    if platform.system() != "Windows":
+        return None
+
+    for name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
+
+        try:
+            return ctypes.WinDLL(name)
+        except OSError:
+            continue
+
+    return None
+
+
+xinput = load_xinput()
+
+
+def pad_button_held(pad, name):
+
+    if name == "LT":
+        return pad.bLeftTrigger > PAD_TRIGGER_THRESHOLD
+
+    if name == "RT":
+        return pad.bRightTrigger > PAD_TRIGGER_THRESHOLD
+
+    return bool(pad.wButtons & PAD_BUTTONS[name])
+
+
+# =========================================================
+# VIRTUAL CONTROLLER
+# =========================================================
+#
+# Windows can't fake presses on a real controller, so in controller
+# mode the target button is pressed on a virtual Xbox 360 controller
+# made with vgamepad (which needs the ViGEmBus driver). Games see it
+# as a second controller.
+
+_virtual_pad = None
+
+
+def virtual_pad():
+
+    # Created the first time it's needed. Raises RuntimeError with a
+    # message for the user if it can't be.
+    global _virtual_pad
+
+
+    if _virtual_pad is None:
+
+        # vgamepad loads its ViGEmClient.dll on import, so a missing
+        # file shows up here as an OSError rather than an ImportError.
+        try:
+            import vgamepad
+        except Exception as e:
+            print("vgamepad failed to load:", repr(e))
+            raise RuntimeError(
+                "Controller output isn't available in this copy of the app "
+                "(its controller component failed to load). Download the "
+                "latest version from amos.fyi."
             )
 
-    except AttributeError:
+        try:
+            _virtual_pad = vgamepad.VX360Gamepad()
+        except Exception as e:
+            print("Virtual controller failed:", repr(e))
+            raise RuntimeError(
+                "Couldn't create the virtual controller. Install the free "
+                "ViGEmBus driver from github.com/nefarius/ViGEmBus/releases, "
+                "then restart the app."
+            )
 
-        pass
+
+    return _virtual_pad
+
+
+def set_pad_button(name, down):
+
+    pad = virtual_pad()
+
+    if name == "LT":
+        pad.left_trigger(value=255 if down else 0)
+
+    elif name == "RT":
+        pad.right_trigger(value=255 if down else 0)
+
+    # XInput's button bits are the same values vgamepad uses.
+    elif down:
+        pad.press_button(button=PAD_BUTTONS[name])
+
+    else:
+        pad.release_button(button=PAD_BUTTONS[name])
+
+    pad.update()
+
+
+def controller_loop():
+
+    # Polls the four XInput slots and fires the macro while the bound
+    # button is held on any controller. Empty slots are slow to query,
+    # so they're only re-checked every couple of seconds.
+    state = XInputState()
+
+    connected = set()
+
+    next_scan = 0.0
+
+    held = False
+
+
+    while True:
+
+        time.sleep(PAD_POLL_SECONDS)
+
+
+        if config["trigger_source"] != "controller":
+
+            if held:
+                held = False
+                trigger_up()
+
+            continue
+
+
+        now = time.monotonic()
+
+        slots = range(4) if now >= next_scan else list(connected)
+
+        if now >= next_scan:
+            next_scan = now + 2.0
+
+
+        name = config["trigger_pad"]
+
+        down = False
+
+        for slot in slots:
+
+            if xinput.XInputGetState(slot, ctypes.byref(state)) != 0:
+                connected.discard(slot)
+                continue
+
+            connected.add(slot)
+
+            if name in PAD_BUTTONS and pad_button_held(state.Gamepad, name):
+                down = True
+
+
+        if down and not held:
+            held = True
+            trigger_down()
+
+        elif held and not down:
+            held = False
+            trigger_up()
 
 
 # =========================================================
@@ -1646,9 +5799,31 @@ def on_release(key):
 
 if __name__ == "__main__":
 
+    # Print this build's hash for approvebuild on the license server.
+    if "--hash" in sys.argv:
+
+        print(app_hash())
+
+        sys.exit(0)
+
+
+    relaunch_without_console()
+
+    redirect_output_to_log()
+
+
+    # Opening the app again while it's already running just
+    # brings up the dashboard instead of starting a second copy.
+    if app_already_running():
+
+        webbrowser.open(APP_URL)
+
+        sys.exit(0)
+
+
     print(
-        "Starting Yakuza Solutions control server "
-        "at http://127.0.0.1:5000"
+        "Starting Amos Solutions control server "
+        f"at {APP_URL}"
     )
 
 
@@ -1660,12 +5835,30 @@ if __name__ == "__main__":
     server_thread.start()
 
 
+    threading.Thread(
+        target=auto_build_loop,
+        daemon=True
+    ).start()
+
+
+    threading.Thread(
+        target=license_sync_loop,
+        daemon=True
+    ).start()
+
+
+    if xinput is not None:
+
+        threading.Thread(
+            target=controller_loop,
+            daemon=True
+        ).start()
+
+
     time.sleep(1)
 
 
-    webbrowser.open(
-        "http://127.0.0.1:5000"
-    )
+    webbrowser.open(APP_URL)
 
 
     with keyboard.Listener(
