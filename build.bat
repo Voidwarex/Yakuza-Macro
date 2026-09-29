@@ -8,12 +8,23 @@ rem "Building the .exe" in the README.
 
 python -m pip install --upgrade nuitka zstandard ordered-set flask pynput vgamepad || goto :error
 
+rem vgamepad loads ViGEmClient.dll from its own folder. Nuitka never
+rem copies DLLs as package data, so name them explicitly below.
+set "VGP="
+for /f "delims=" %%i in ('python -c "import importlib.util, os; print(os.path.dirname(importlib.util.find_spec('vgamepad').origin))"') do set "VGP=%%i"
+if not defined VGP goto :error
+if not exist "%VGP%\win\vigem\client\x64\ViGEmClient.dll" (
+    echo Can't find ViGEmClient.dll in "%VGP%".
+    goto :error
+)
+
 python -m nuitka ^
     --onefile ^
     --windows-console-mode=disable ^
     --windows-icon-from-ico=branding\amos.ico ^
     --include-package=vgamepad ^
-    --include-package-data=vgamepad ^
+    --include-data-files="%VGP%\win\vigem\client\x64\ViGEmClient.dll=vgamepad\win\vigem\client\x64\ViGEmClient.dll" ^
+    --include-data-files="%VGP%\win\vigem\client\x86\ViGEmClient.dll=vgamepad\win\vigem\client\x86\ViGEmClient.dll" ^
     --product-name="Amos Solutions" ^
     --company-name="Amos Solutions" ^
     --file-description="Amos Solutions Auto Builder" ^

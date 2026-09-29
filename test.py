@@ -5686,20 +5686,26 @@ def virtual_pad():
 
     if _virtual_pad is None:
 
+        # vgamepad loads its ViGEmClient.dll on import, so a missing
+        # file shows up here as an OSError rather than an ImportError.
         try:
             import vgamepad
-        except ImportError:
+        except Exception as e:
+            print("vgamepad failed to load:", repr(e))
             raise RuntimeError(
-                "A controller target needs vgamepad. Run: pip install vgamepad "
-                "(it also installs the ViGEmBus driver), then restart the app."
+                "Controller output isn't available in this copy of the app "
+                "(its controller component failed to load). Download the "
+                "latest version from amos.fyi."
             )
 
         try:
             _virtual_pad = vgamepad.VX360Gamepad()
-        except Exception:
+        except Exception as e:
+            print("Virtual controller failed:", repr(e))
             raise RuntimeError(
-                "Couldn't create the virtual controller. Install the ViGEmBus "
-                "driver (pip install vgamepad sets it up), then restart the app."
+                "Couldn't create the virtual controller. Install the free "
+                "ViGEmBus driver from github.com/nefarius/ViGEmBus/releases, "
+                "then restart the app."
             )
 
 
