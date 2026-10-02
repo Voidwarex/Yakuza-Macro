@@ -338,3 +338,57 @@ input:focus {
     font-size: 0.85rem;
     margin-bottom: 16px;
 }
+
+/* ---- accounts / plans ---- */
+
+.topbar-right { display: flex; align-items: center; gap: 18px; }
+.topbar-right .email { font-size: 0.88rem; }
+
+.plan-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 28px;
+}
+.plan-name { font-weight: 700; font-size: 1.05rem; }
+.plan-usage { color: var(--text-muted); font-size: 0.9rem; margin-top: 2px; }
+.plan-actions { display: flex; gap: 10px; }
+
+.alt-link { text-align: center; color: var(--text-muted); font-size: 0.9rem; margin-top: 16px; }
+.alt-link a { color: var(--accent-green); }
+
+/* ---- tiers (upgrade modal) ---- */
+
+.modal-wide { max-width: 760px; }
+
+.tiers {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin: 18px 0;
+}
+.tier {
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 20px;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.tier.current { border-color: var(--accent-green); box-shadow: 0 0 0 1px var(--accent-green) inset; }
+.tier-name { font-weight: 700; font-size: 1.1rem; }
+.tier-price { font-size: 1.6rem; font-weight: 800; }
+.tier-price span { font-size: 0.9rem; font-weight: 500; color: var(--text-muted); }
+.tier-devices { color: var(--accent-green); font-weight: 600; font-size: 0.9rem; }
+.tier-blurb { color: var(--text-muted); font-size: 0.85rem; flex: 1; margin-bottom: 10px; }
+
+@media (max-width: 680px) {
+    .tiers { grid-template-columns: 1fr; }
+}

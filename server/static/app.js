@@ -1,6 +1,5 @@
-// Dashboard logic: render devices, send commands, enroll new devices.
-// No inline event handlers — everything is wired up here so a strict
-// Content-Security-Policy (script-src 'self') can be enforced.
+// Dashboard logic: devices, commands, enrollment, plan limits + upgrades.
+// No inline handlers, so a strict CSP (script-src 'self') can be enforced.
 
 let newKey = "";
 
@@ -8,13 +7,9 @@ const CSRF = document
     .querySelector('meta[name="csrf-token"]')
     .getAttribute("content");
 
-// Wrapper that attaches the CSRF token to state-changing requests.
 function api(url, options = {}) {
     const opts = { ...options };
-    opts.headers = {
-        ...(opts.headers || {}),
-        "X-CSRF-Token": CSRF,
-    };
+    opts.headers = { ...(opts.headers || {}), "X-CSRF-Token": CSRF };
     return fetch(url, opts);
 }
 
@@ -33,19 +28,26 @@ function esc(s) {
     );
 }
 
+let planState = { used: 0, limit: 3, at_limit: false };
+
 async function loadDevices() {
     let res;
     try {
         res = await fetch("/panel/devices");
     } catch (e) {
-        return; // transient network error; next tick retries
+        return;
     }
-    // Session expired -> login_required redirects us to the sign-in page.
     if (res.redirected || res.status === 401) {
         window.location = "/login";
         return;
     }
-    const devices = await res.json();
+    const data = await res.json();
+    const devices = data.devices || [];
+    planState = data.plan || planState;
+
+    const usage = document.getElementById("usageText");
+    if (usage) usage.textContent = `${planState.used} / ${planState.limit} devices`;
+
     const grid = document.getElementById("grid");
     const empty = document.getElementById("empty");
 
@@ -106,11 +108,8 @@ async function cmd(id, action) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
     });
-    if (res.ok) {
-        loadDevices();
-    } else {
-        alert("Failed to send command.");
-    }
+    if (res.ok) loadDevices();
+    else alert("Failed to send command.");
 }
 
 async function removeDevice(id, name) {
@@ -122,6 +121,10 @@ async function removeDevice(id, name) {
 // ---- add-device modal ----
 
 function openAddModal() {
+    if (planState.at_limit) {
+        openUpgradeModal();
+        return;
+    }
     document.getElementById("addStep1").style.display = "block";
     document.getElementById("addStep2").style.display = "none";
     document.getElementById("deviceName").value = "";
@@ -144,6 +147,13 @@ async function createDevice() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
     });
+    if (res.status === 402) {
+        const data = await res.json();
+        closeAddModal();
+        alert(data.message || "Device limit reached.");
+        openUpgradeModal();
+        return;
+    }
     if (!res.ok) {
         alert("Failed to create device.");
         return;
@@ -167,7 +177,37 @@ function finishAdd() {
     loadDevices();
 }
 
-// ---- event wiring (no inline handlers) ----
+// ---- upgrade / billing ----
+
+function openUpgradeModal() {
+    document.getElementById("upgradeModal").classList.add("show");
+}
+function closeUpgradeModal() {
+    document.getElementById("upgradeModal").classList.remove("show");
+}
+
+async function pickPlan(plan) {
+    const res = await api("/panel/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.url) {
+        window.location = data.url; // Stripe Checkout
+    } else {
+        alert(data.error || "Could not start checkout.");
+    }
+}
+
+async function manageBilling() {
+    const res = await api("/panel/billing/portal", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.url) window.location = data.url;
+    else alert(data.error || "Could not open billing portal.");
+}
+
+// ---- wiring ----
 
 document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("addBtn").addEventListener("click", openAddModal);
@@ -176,25 +216,29 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("copyKeyBtn").addEventListener("click", copyKey);
     document.getElementById("doneBtn").addEventListener("click", finishAdd);
 
-    // Enter key in the name field creates the device.
+    const upBtn = document.getElementById("upgradeBtn");
+    if (upBtn) upBtn.addEventListener("click", openUpgradeModal);
+    const mBtn = document.getElementById("manageBtn");
+    if (mBtn) mBtn.addEventListener("click", manageBilling);
+    document.getElementById("closeUpgradeBtn").addEventListener("click", closeUpgradeModal);
+
+    document.querySelectorAll(".tier-pick").forEach((b) =>
+        b.addEventListener("click", () => pickPlan(b.getAttribute("data-plan")))
+    );
+
     document.getElementById("deviceName").addEventListener("keydown", (e) => {
         if (e.key === "Enter") createDevice();
     });
 
-    // Delegate the per-device action buttons.
     document.getElementById("grid").addEventListener("click", (e) => {
         const btn = e.target.closest("button[data-act]");
         if (!btn) return;
         const id = btn.getAttribute("data-id");
         const act = btn.getAttribute("data-act");
-        if (act === "remove") {
-            removeDevice(id, btn.getAttribute("data-name"));
-        } else {
-            cmd(id, act);
-        }
+        if (act === "remove") removeDevice(id, btn.getAttribute("data-name"));
+        else cmd(id, act);
     });
 
-    // Poll the device list so status/last-seen stay fresh.
     loadDevices();
     setInterval(loadDevices, 5000);
 });

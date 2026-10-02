@@ -17,14 +17,13 @@ SSH into the server that serves amos.fyi, then:
 ```bash
 # 1. Get the code
 git clone https://github.com/Voidwarex/Yakuza-Macro.git ~/remote-power
-cd ~/remote-power
-git checkout claude/remote-pc-shutdown-app-2c01dc   # or main, once merged
+cd ~/remote-power          # already on main
 
 # 2. Create the secrets file for the relay
 sudo cp server/config.example.env /etc/remote-power.env
 sudo nano /etc/remote-power.env
-#   - set ADMIN_PASSWORD to a strong password
 #   - set SECRET_KEY: run  python3 -c "import secrets;print(secrets.token_hex(32))"
+#   - (optional) add the STRIPE_* keys to enable paid plans — see README "Billing"
 
 # 3. (api.amos.fyi) install the nginx vhost for the relay — reuses your
 #    existing Cloudflare Origin cert at /etc/ssl/amos/
@@ -33,10 +32,13 @@ sudo cp deploy/nginx-api.conf /etc/nginx/conf.d/remote-power-api.conf
 
 # 4. Run the deploy script (publishes the site + starts the relay + reloads nginx)
 sudo bash deploy/deploy.sh
+
+# 5. Make yourself an admin account (optional, Business plan + admin CLI)
+cd /opt/remote-power && sudo -E python3 app.py createadmin you@example.com
 ```
 
 Then open **https://amos.fyi** (new landing page) and **https://api.amos.fyi**
-(sign in with your `ADMIN_PASSWORD`).
+(click **Create account** to register, or sign in).
 
 ## Updating later
 

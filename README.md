@@ -13,6 +13,22 @@ Cloudflare + nginx at `api.amos.fyi`.
 The PC only makes **outbound** HTTPS requests to the relay, so it works from
 behind any home router — no port forwarding, no public IP on the PC.
 
+## Accounts & plans
+
+Each customer registers their own account and sees only their own devices.
+Plans cap how many devices an account can enroll:
+
+| Plan | Devices | Price (placeholder) |
+|---|---|---|
+| Free | 3 | $0 |
+| Pro | 10 | $4.99/mo |
+| Business | 50 | $14.99/mo |
+
+Paid plans are sold as **Stripe subscriptions** (see "Billing" below). Edit
+prices and device limits in one place: `server/plans.py`. The relay runs fine
+with Stripe unconfigured — the upgrade screen just says billing isn't set up,
+and you can set plans manually with the admin CLI.
+
 ## Parts
 
 | Folder | What it is | Where it runs |
@@ -26,16 +42,23 @@ behind any home router — no port forwarding, no public IP on the PC.
 ```
 cd server
 pip install -r requirements.txt
-export ADMIN_PASSWORD='choose-a-strong-password'
 export SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')"
-python app.py
+python app.py serve
 ```
 
-`app.py` uses the `waitress` production server when it is installed, and binds
-to `127.0.0.1:8000` by default (so nginx can sit in front). The database is
-`power.db` next to the script — override with `DB_PATH`. Keep it private.
+`app.py serve` uses the `waitress` production server when it is installed, and
+binds to `127.0.0.1:8000` by default (so nginx can sit in front). The database
+is `power.db` next to the script — override with `DB_PATH`. Keep it private.
 
 See `server/config.example.env` for every setting.
+
+### Admin CLI
+
+```
+python app.py createadmin you@example.com    # make yourself an admin (Business plan)
+python app.py setplan user@example.com pro   # manually set a plan
+python app.py listusers                      # list accounts + device usage
+```
 
 ### HTTPS with Cloudflare (same as your Amos setup)
 
@@ -50,11 +73,13 @@ See `server/config.example.env` for every setting.
 5. Check it: open `https://api.amos.fyi` in a browser — you should get the
    sign-in page.
 
-## 2. Add a device in the panel
+## 2. Create an account & add a device
 
-1. Browse to `https://api.amos.fyi` and sign in with your `ADMIN_PASSWORD`.
+1. Browse to `https://api.amos.fyi`, click **Create account**, register with an
+   email + password. New accounts start on the Free plan (3 devices).
 2. Click **Add device**, give it a name, and copy the **API key** it shows.
-   The key is shown only once.
+   The key is shown only once. (At your plan's limit, you'll be prompted to
+   upgrade instead.)
 
 ## 3. Run the listener on your PC
 
@@ -99,29 +124,60 @@ From the panel you'll see each device with its online status and buttons:
 
 Commands are delivered on the listener's next poll (every 5s by default).
 
+## Billing (Stripe subscriptions)
+
+Paid plans use [Stripe Checkout](https://stripe.com) + subscriptions. Without
+Stripe configured, everything works except paid upgrades (you can still set
+plans with `app.py setplan`).
+
+To enable it:
+
+1. In the Stripe Dashboard, create two **recurring Products/Prices** — one for
+   Pro, one for Business — and copy their Price IDs (`price_...`). Set the
+   displayed amounts to match `server/plans.py` (or edit `plans.py` to match
+   Stripe).
+2. Add a **webhook endpoint** pointing at `https://api.amos.fyi/billing/webhook`,
+   subscribed to `checkout.session.completed`,
+   `customer.subscription.updated` and `customer.subscription.deleted`. Copy
+   its signing secret.
+3. Put the keys in `/etc/remote-power.env`:
+   ```
+   STRIPE_SECRET_KEY=sk_live_...
+   STRIPE_WEBHOOK_SECRET=whsec_...
+   STRIPE_PRICE_PRO=price_...
+   STRIPE_PRICE_BUSINESS=price_...
+   PUBLIC_URL=https://api.amos.fyi
+   ```
+4. Restart the relay. The upgrade screen now sends customers to Stripe
+   Checkout, and the webhook updates their plan automatically. "Manage billing"
+   opens the Stripe customer portal so they can cancel or change card.
+
+Test with Stripe **test mode** keys first (and `stripe listen --forward-to
+localhost:8000/billing/webhook` for local webhooks).
+
 ## Security
 
-The web panel password is the whole security boundary, so the relay is
+The web panel is account-protected (one login per customer), so the relay is
 hardened accordingly:
 
 - **HTTPS only.** The login cookie is marked `Secure` + `HttpOnly` +
   `SameSite=Lax`, and HSTS is sent. (For local http testing set
-  `INSECURE_COOKIES=1`.) Never expose the relay over plain HTTP — the panel
-  password and device API keys would travel in clear text.
+  `INSECURE_COOKIES=1`.) Never expose the relay over plain HTTP — account
+  passwords and device API keys would travel in clear text.
+- **Account passwords are hashed** (werkzeug / PBKDF2), never stored in plain
+  text, and each account sees only its own devices.
 - **Brute-force lockout.** After 5 failed logins an IP is locked out for 5
-  minutes.
-- **Constant-time password check** and **session rotation on login** (guards
-  against timing attacks and session fixation).
+  minutes, with **session rotation on login** (anti session-fixation).
 - **CSRF protection** on every state-changing panel request. The listener
-  `/api/*` endpoints use Bearer-token auth (no cookie), so they are not
-  CSRF-exposed.
+  `/api/*` endpoints use Bearer-token auth (no cookie) and the Stripe webhook
+  is verified by signature, so neither is CSRF-exposed.
 - **Strict Content-Security-Policy**, `X-Frame-Options: DENY` (no
   clickjacking), `nosniff`, and a 64 KB request-body cap.
 - Device API keys are stored only as **hashes**; the plaintext is shown once
   at enrollment. Anyone with a key can power that PC off — keep `config.ini`
   private, and **Remove** a device in the panel to revoke its key instantly.
-- Use a strong `ADMIN_PASSWORD` and set `SECRET_KEY` so logins survive a
-  restart.
+- Set `SECRET_KEY` so logins survive a restart, and keep `power.db` and
+  `/etc/remote-power.env` private.
 
 ### Why a domain and not the raw server IP
 
@@ -134,5 +190,5 @@ attack. If you ever do need the IP, put it behind HTTPS too.
 
 ## Requirements
 
-- Server: Python 3.9+, `flask`, `waitress`.
+- Server: Python 3.9+, `flask`, `waitress`, `stripe` (billing optional).
 - Client: Python 3.9+, `requests`.
