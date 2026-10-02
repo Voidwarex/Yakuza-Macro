@@ -2,6 +2,7 @@
 // No inline handlers, so a strict CSP (script-src 'self') can be enforced.
 
 let newKey = "";
+let newName = "";
 
 const CSRF = document
     .querySelector('meta[name="csrf-token"]')
@@ -196,9 +197,30 @@ async function createDevice() {
     }
     const data = await res.json();
     newKey = data.api_key;
+    newName = data.name || name;
     document.getElementById("apiKeyBox").textContent = newKey;
     document.getElementById("addStep1").style.display = "none";
     document.getElementById("addStep2").style.display = "block";
+}
+
+function downloadConfig() {
+    // Build a ready-to-use config.ini pointed at this server, key pre-filled.
+    const body =
+        "[listener]\n" +
+        "server_url = " + window.location.origin + "\n" +
+        "api_key = " + newKey + "\n" +
+        "device = " + newName + "\n" +
+        "kind = auto\n" +
+        "poll_interval = 5\n" +
+        "dry_run = false\n";
+    const blob = new Blob([body], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "config.ini";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function copyKey() {
@@ -356,6 +378,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("addBtn").addEventListener("click", openAddModal);
     document.getElementById("createBtn").addEventListener("click", createDevice);
     document.getElementById("cancelAddBtn").addEventListener("click", closeAddModal);
+    document.getElementById("downloadCfgBtn").addEventListener("click", downloadConfig);
     document.getElementById("copyKeyBtn").addEventListener("click", copyKey);
     document.getElementById("doneBtn").addEventListener("click", finishAdd);
 

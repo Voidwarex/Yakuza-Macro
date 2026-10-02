@@ -85,25 +85,35 @@ python app.py listusers                      # list accounts + device usage
 
 1. Browse to `https://api.amos.fyi`, click **Create account**, register with an
    email + password. New accounts start on the Free plan (3 devices).
-2. Click **Add device**, give it a name, and copy the **API key** it shows.
-   The key is shown only once. (At your plan's limit, you'll be prompted to
-   upgrade instead.)
+2. Click **Add device**, give it a name, then **⬇ Download config.ini** — this
+   is a ready-to-use config with the server URL and API key already filled in.
+   (The key is shown only once; you can also **Copy key** to paste manually.
+   At your plan's limit you'll be prompted to upgrade instead.)
 
 ## 3. Run the listener on your PC
 
 ```
 cd client
 pip install -r requirements.txt
+```
+
+Then drop the **config.ini you downloaded** from the panel into this `client/`
+folder — that's the whole setup, no editing needed.
+
+<details><summary>Prefer to do it by hand?</summary>
+
+```
 copy config.example.ini config.ini     # on Windows (use cp on macOS/Linux)
 ```
 
-Edit `config.ini`:
+and edit `config.ini`:
 
 ```
 server_url = https://api.amos.fyi
 api_key    = <the key from the panel>
 device     = Home PC
 ```
+</details>
 
 Then:
 
