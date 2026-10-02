@@ -257,6 +257,7 @@ def _plan_context(user):
         "limit": limit,
         "used": used,
         "at_limit": used >= limit,
+        "pct": min(100, round(used / limit * 100)) if limit else 0,
     }
 
 
@@ -289,6 +290,7 @@ def panel_devices():
             {
                 "id": d["id"],
                 "name": d["name"],
+                "kind": d["kind"] or "desktop",
                 "online": bool(d["last_seen"]) and (now - d["last_seen"] < OFFLINE_AFTER),
                 "last_seen": d["last_seen"],
                 "last_ip": d["last_ip"],
@@ -479,7 +481,10 @@ def api_poll():
     body = request.json or {}
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
     ip = ip.split(",")[0].strip()
-    db.touch_device(device_id, ip, str(body.get("os_info", ""))[:200])
+    kind = str(body.get("kind", "")).strip().lower()
+    if kind not in ("desktop", "laptop", "server"):
+        kind = None  # leave the stored value untouched
+    db.touch_device(device_id, ip, str(body.get("os_info", ""))[:200], kind)
     cmd = db.next_pending_command(device_id)
     if not cmd:
         return jsonify({"action": None})

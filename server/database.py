@@ -58,10 +58,17 @@ def init_db():
                 last_seen   REAL,
                 last_ip     TEXT,
                 os_info     TEXT,
+                kind        TEXT NOT NULL DEFAULT 'desktop',
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
             )
             """
         )
+        # Migration: add 'kind' to databases created before it existed.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(devices)")}
+        if "kind" not in cols:
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN kind TEXT NOT NULL DEFAULT 'desktop'"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS commands (
@@ -191,11 +198,13 @@ def delete_device(device_id, user_id):
         )
 
 
-def touch_device(device_id, ip, os_info):
+def touch_device(device_id, ip, os_info, kind=None):
+    """Heartbeat from a poll. 'kind' is only updated when provided."""
     with get_conn() as conn:
         conn.execute(
-            "UPDATE devices SET last_seen = ?, last_ip = ?, os_info = ? WHERE id = ?",
-            (time.time(), ip, os_info, device_id),
+            "UPDATE devices SET last_seen = ?, last_ip = ?, os_info = ?, "
+            "kind = COALESCE(?, kind) WHERE id = ?",
+            (time.time(), ip, os_info, kind, device_id),
         )
 
 

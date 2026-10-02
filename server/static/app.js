@@ -28,6 +28,35 @@ function esc(s) {
     );
 }
 
+// Icon per device type (desktop / laptop / server).
+function iconFor(kind) {
+    if (kind === "server") {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/>
+            <line x1="7" y1="6.5" x2="7" y2="6.5"/><line x1="7" y1="17.5" x2="7" y2="17.5"/></svg>`;
+    }
+    if (kind === "laptop") {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="4" y="5" width="16" height="11" rx="2"/><line x1="2" y1="20" x2="22" y2="20"/></svg>`;
+    }
+    // desktop / default
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+}
+
+function kindLabel(kind) {
+    return { server: "Server", laptop: "Laptop", desktop: "Desktop" }[kind] || "Desktop";
+}
+
+function updateMeter() {
+    const meter = document.getElementById("usageMeter");
+    if (!meter) return;
+    const pct = planState.limit ? Math.min(100, (planState.used / planState.limit) * 100) : 0;
+    const span = meter.querySelector("span");
+    if (span) span.style.width = pct + "%";
+    meter.classList.toggle("full", !!planState.at_limit);
+}
+
 let planState = { used: 0, limit: 3, at_limit: false };
 
 async function loadDevices() {
@@ -47,6 +76,7 @@ async function loadDevices() {
 
     const usage = document.getElementById("usageText");
     if (usage) usage.textContent = `${planState.used} / ${planState.limit} devices`;
+    updateMeter();
 
     const grid = document.getElementById("grid");
     const empty = document.getElementById("empty");
@@ -66,17 +96,22 @@ async function loadDevices() {
             const cancelBtn = d.pending
                 ? `<button class="btn-ghost btn-sm" data-act="cancel" data-id="${d.id}">Cancel</button>`
                 : "";
+            const kind = d.kind || "desktop";
             return `
-            <div class="card">
+            <div class="card ${d.online ? "is-online" : ""}">
                 <div class="card-head">
-                    <div class="device-name">
-                        <span class="dot ${d.online ? "online" : ""}"></span>
-                        ${esc(d.name)}
+                    <div class="device-ident">
+                        <span class="dev-icon ${d.online ? "on" : ""}">${iconFor(kind)}</span>
+                        <div class="ident-text">
+                            <div class="device-name">${esc(d.name)}</div>
+                            <span class="status-pill ${d.online ? "online" : ""}">
+                                ${d.online ? "Online" : "Offline"} · ${kindLabel(kind)}
+                            </span>
+                        </div>
                     </div>
                     ${pending}
                 </div>
                 <div class="meta">
-                    <div>Status: <b>${d.online ? "Online" : "Offline"}</b></div>
                     <div>Last seen: <b>${timeAgo(d.last_seen)}</b></div>
                     <div>IP: <b>${esc(d.last_ip) || "—"}</b></div>
                     <div>System: <b>${esc(d.os_info) || "—"}</b></div>

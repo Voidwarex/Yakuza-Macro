@@ -29,9 +29,12 @@
     <div class="container">
         <!-- Plan / usage bar -->
         <div class="plan-bar">
-            <div>
+            <div class="plan-info">
                 <div class="plan-name">{{ plan_name }} plan</div>
                 <div class="plan-usage" id="usageText">{{ used }} / {{ limit }} devices</div>
+                <div class="meter {% if at_limit %}full{% endif %}" id="usageMeter">
+                    <span style="width: {{ pct }}%"></span>
+                </div>
             </div>
             <div class="plan-actions">
                 {% if plan != 'business' %}

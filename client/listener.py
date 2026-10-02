@@ -65,10 +65,100 @@ def load_config():
         "device": section.get("device", platform.node() or "PC"),
         "poll_interval": section.getint("poll_interval", 5),
         "dry_run": section.getboolean("dry_run", False),
+        "kind": section.get("kind", "auto").strip().lower(),
     }
     if not cfg["api_key"]:
         sys.exit("No api_key set in config.ini. Add the key from the web panel.")
     return cfg
+
+
+# --------------------------------------------------------------------------
+# Device type detection (desktop / laptop / server)
+# --------------------------------------------------------------------------
+
+def detect_kind():
+    """Best-effort guess of what kind of machine this is."""
+    system = platform.system()
+    try:
+        if system == "Linux":
+            # DMI chassis type is the most reliable signal when present.
+            try:
+                with open("/sys/class/dmi/id/chassis_type") as f:
+                    ct = int(f.read().strip())
+                if ct in (8, 9, 10, 11, 12, 14, 30, 31, 32):
+                    return "laptop"
+                if ct in (17, 18, 19, 20, 21, 22, 23, 24, 25, 28):
+                    return "server"
+                if ct in (3, 4, 5, 6, 7, 13, 16):
+                    return "desktop"
+            except Exception:
+                pass
+            import glob
+            if glob.glob("/sys/class/power_supply/BAT*"):
+                return "laptop"
+            # Headless Linux (no graphical session) is usually a server.
+            if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+                return "server"
+            return "desktop"
+
+        if system == "Windows":
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SYSTEM\CurrentControlSet\Control\ProductOptions",
+                )
+                product_type, _ = winreg.QueryValueEx(key, "ProductType")
+                if str(product_type) in ("ServerNT", "LanmanNT"):
+                    return "server"
+            except Exception:
+                pass
+            # Battery present -> laptop.
+            try:
+                import ctypes
+
+                class _SPS(ctypes.Structure):
+                    _fields_ = [
+                        ("ACLineStatus", ctypes.c_byte),
+                        ("BatteryFlag", ctypes.c_byte),
+                        ("BatteryLifePercent", ctypes.c_byte),
+                        ("Reserved1", ctypes.c_byte),
+                        ("BatteryLifeTime", ctypes.c_ulong),
+                        ("BatteryFullLifeTime", ctypes.c_ulong),
+                    ]
+
+                status = _SPS()
+                if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+                    # 128 = no system battery, 255 = unknown.
+                    if status.BatteryFlag not in (128, 255):
+                        return "laptop"
+            except Exception:
+                pass
+            return "desktop"
+
+        if system == "Darwin":
+            try:
+                model = subprocess.check_output(
+                    ["sysctl", "-n", "hw.model"]
+                ).decode().strip()
+                if "Book" in model:   # MacBook / MacBook Pro / Air
+                    return "laptop"
+            except Exception:
+                pass
+            return "desktop"
+    except Exception:
+        pass
+    return "desktop"
+
+
+def resolve_kind(cfg):
+    """Honour an explicit kind in config.ini, otherwise auto-detect."""
+    choice = cfg.get("kind", "auto")
+    if choice in ("server", "laptop", "desktop"):
+        return choice
+    if choice == "pc":
+        return "desktop"
+    return detect_kind()
 
 
 # --------------------------------------------------------------------------
@@ -135,7 +225,9 @@ def main():
     poll_url = f"{cfg['server_url']}/api/poll"
     ack_url = f"{cfg['server_url']}/api/ack"
 
-    print(f"Remote Power listener — device '{cfg['device']}'")
+    kind = resolve_kind(cfg)
+
+    print(f"Remote Power listener — device '{cfg['device']}' ({kind})")
     print(f"Relay: {cfg['server_url']}  (polling every {cfg['poll_interval']}s)")
     if cfg["dry_run"]:
         print("DRY RUN: commands will be logged but not executed.")
@@ -146,7 +238,7 @@ def main():
         try:
             resp = requests.post(
                 poll_url,
-                json={"os_info": os_info(), "device": cfg["device"]},
+                json={"os_info": os_info(), "device": cfg["device"], "kind": kind},
                 headers=headers,
                 timeout=15,
             )
