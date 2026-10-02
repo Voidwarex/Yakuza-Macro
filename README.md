@@ -99,14 +99,38 @@ From the panel you'll see each device with its online status and buttons:
 
 Commands are delivered on the listener's next poll (every 5s by default).
 
-## Security notes
+## Security
 
-- Always serve the relay over HTTPS. Over plain HTTP the panel password and
-  device API keys travel in clear text.
-- Anyone with a device's API key can power that PC off — keep `config.ini`
-  private. Remove a device in the panel to revoke its key instantly.
+The web panel password is the whole security boundary, so the relay is
+hardened accordingly:
+
+- **HTTPS only.** The login cookie is marked `Secure` + `HttpOnly` +
+  `SameSite=Lax`, and HSTS is sent. (For local http testing set
+  `INSECURE_COOKIES=1`.) Never expose the relay over plain HTTP — the panel
+  password and device API keys would travel in clear text.
+- **Brute-force lockout.** After 5 failed logins an IP is locked out for 5
+  minutes.
+- **Constant-time password check** and **session rotation on login** (guards
+  against timing attacks and session fixation).
+- **CSRF protection** on every state-changing panel request. The listener
+  `/api/*` endpoints use Bearer-token auth (no cookie), so they are not
+  CSRF-exposed.
+- **Strict Content-Security-Policy**, `X-Frame-Options: DENY` (no
+  clickjacking), `nosniff`, and a 64 KB request-body cap.
+- Device API keys are stored only as **hashes**; the plaintext is shown once
+  at enrollment. Anyone with a key can power that PC off — keep `config.ini`
+  private, and **Remove** a device in the panel to revoke its key instantly.
 - Use a strong `ADMIN_PASSWORD` and set `SECRET_KEY` so logins survive a
   restart.
+
+### Why a domain and not the raw server IP
+
+The listener and panel talk to `https://api.amos.fyi`, not the server's raw
+`172.x` IP, on purpose: a hostname lets Cloudflare terminate TLS with a valid
+certificate so traffic is encrypted and the origin IP stays hidden behind
+Cloudflare. Pointing straight at the IP would mean either no TLS (keys sent in
+clear text) or certificate warnings, and would expose the origin to direct
+attack. If you ever do need the IP, put it behind HTTPS too.
 
 ## Requirements
 

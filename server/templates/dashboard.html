@@ -3,6 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content="{{ csrf }}" />
     <title>Remote Power — Devices</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
@@ -26,7 +27,7 @@
                 <h1>Your devices</h1>
                 <p class="subtitle">Send power commands to any PC running the listener.</p>
             </div>
-            <button class="btn-green" onclick="openAddModal()">+ Add device</button>
+            <button class="btn-green" id="addBtn">+ Add device</button>
         </div>
 
         <div id="grid" class="grid"></div>
@@ -42,8 +43,8 @@
             <div id="addStep1">
                 <input type="text" id="deviceName" placeholder="Device name (e.g. Home PC)" />
                 <div class="actions">
-                    <button class="btn-green" onclick="createDevice()">Create</button>
-                    <button class="btn-ghost" onclick="closeAddModal()">Cancel</button>
+                    <button class="btn-green" id="createBtn">Create</button>
+                    <button class="btn-ghost" id="cancelAddBtn">Cancel</button>
                 </div>
             </div>
             <div id="addStep2" style="display:none">
@@ -52,8 +53,8 @@
                 <div class="key-box" id="apiKeyBox"></div>
                 <p class="warn">⚠ This key is shown only once. Copy it now.</p>
                 <div class="actions">
-                    <button class="btn-green" onclick="copyKey()">Copy key</button>
-                    <button class="btn-ghost" onclick="finishAdd()">Done</button>
+                    <button class="btn-green" id="copyKeyBtn">Copy key</button>
+                    <button class="btn-ghost" id="doneBtn">Done</button>
                 </div>
             </div>
         </div>

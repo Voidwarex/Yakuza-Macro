@@ -1,6 +1,22 @@
 // Dashboard logic: render devices, send commands, enroll new devices.
+// No inline event handlers — everything is wired up here so a strict
+// Content-Security-Policy (script-src 'self') can be enforced.
 
 let newKey = "";
+
+const CSRF = document
+    .querySelector('meta[name="csrf-token"]')
+    .getAttribute("content");
+
+// Wrapper that attaches the CSRF token to state-changing requests.
+function api(url, options = {}) {
+    const opts = { ...options };
+    opts.headers = {
+        ...(opts.headers || {}),
+        "X-CSRF-Token": CSRF,
+    };
+    return fetch(url, opts);
+}
 
 function timeAgo(ts) {
     if (!ts) return "never";
@@ -18,8 +34,14 @@ function esc(s) {
 }
 
 async function loadDevices() {
-    const res = await fetch("/panel/devices");
-    if (res.status === 401) {
+    let res;
+    try {
+        res = await fetch("/panel/devices");
+    } catch (e) {
+        return; // transient network error; next tick retries
+    }
+    // Session expired -> login_required redirects us to the sign-in page.
+    if (res.redirected || res.status === 401) {
         window.location = "/login";
         return;
     }
@@ -39,6 +61,9 @@ async function loadDevices() {
             const pending = d.pending
                 ? `<span class="badge">${d.pending} pending</span>`
                 : "";
+            const cancelBtn = d.pending
+                ? `<button class="btn-ghost btn-sm" data-act="cancel" data-id="${d.id}">Cancel</button>`
+                : "";
             return `
             <div class="card">
                 <div class="card-head">
@@ -55,15 +80,11 @@ async function loadDevices() {
                     <div>System: <b>${esc(d.os_info) || "—"}</b></div>
                 </div>
                 <div class="actions">
-                    <button class="btn-red btn-sm" onclick="cmd(${d.id}, 'shutdown')">Shut down</button>
-                    <button class="btn-amber btn-sm" onclick="cmd(${d.id}, 'restart')">Restart</button>
-                    <button class="btn-sm" onclick="cmd(${d.id}, 'lock')">Lock</button>
-                    ${
-                        d.pending
-                            ? `<button class="btn-ghost btn-sm" onclick="cmd(${d.id}, 'cancel')">Cancel</button>`
-                            : ""
-                    }
-                    <button class="btn-ghost btn-sm" onclick="removeDevice(${d.id}, '${esc(d.name)}')">Remove</button>
+                    <button class="btn-red btn-sm" data-act="shutdown" data-id="${d.id}">Shut down</button>
+                    <button class="btn-amber btn-sm" data-act="restart" data-id="${d.id}">Restart</button>
+                    <button class="btn-sm" data-act="lock" data-id="${d.id}">Lock</button>
+                    ${cancelBtn}
+                    <button class="btn-ghost btn-sm" data-act="remove" data-id="${d.id}" data-name="${esc(d.name)}">Remove</button>
                 </div>
             </div>`;
         })
@@ -80,7 +101,7 @@ async function cmd(id, action) {
     if (action !== "lock" && action !== "cancel") {
         if (!confirm(`Are you sure you want to ${labels[action]} this device?`)) return;
     }
-    const res = await fetch(`/panel/devices/${id}/command`, {
+    const res = await api(`/panel/devices/${id}/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
@@ -94,7 +115,7 @@ async function cmd(id, action) {
 
 async function removeDevice(id, name) {
     if (!confirm(`Remove "${name}"? Its API key will stop working.`)) return;
-    await fetch(`/panel/devices/${id}`, { method: "DELETE" });
+    await api(`/panel/devices/${id}`, { method: "DELETE" });
     loadDevices();
 }
 
@@ -118,7 +139,7 @@ async function createDevice() {
         alert("Please enter a device name.");
         return;
     }
-    const res = await fetch("/panel/devices", {
+    const res = await api("/panel/devices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -146,6 +167,34 @@ function finishAdd() {
     loadDevices();
 }
 
-// Poll the device list so status/last-seen stay fresh.
-loadDevices();
-setInterval(loadDevices, 5000);
+// ---- event wiring (no inline handlers) ----
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("addBtn").addEventListener("click", openAddModal);
+    document.getElementById("createBtn").addEventListener("click", createDevice);
+    document.getElementById("cancelAddBtn").addEventListener("click", closeAddModal);
+    document.getElementById("copyKeyBtn").addEventListener("click", copyKey);
+    document.getElementById("doneBtn").addEventListener("click", finishAdd);
+
+    // Enter key in the name field creates the device.
+    document.getElementById("deviceName").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") createDevice();
+    });
+
+    // Delegate the per-device action buttons.
+    document.getElementById("grid").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-act]");
+        if (!btn) return;
+        const id = btn.getAttribute("data-id");
+        const act = btn.getAttribute("data-act");
+        if (act === "remove") {
+            removeDevice(id, btn.getAttribute("data-name"));
+        } else {
+            cmd(id, act);
+        }
+    });
+
+    // Poll the device list so status/last-seen stay fresh.
+    loadDevices();
+    setInterval(loadDevices, 5000);
+});
