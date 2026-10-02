@@ -4,283 +4,245 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Amos Solutions — Remote Power</title>
-<meta name="description" content="Remote Power by Amos Solutions: shut down, restart or lock your PC from anywhere in the world, from a clean dashboard in your browser.">
+<meta name="description" content="Remote Power by Amos Solutions: shut down, restart or lock your computer from anywhere, right from your browser. Simple, secure, cross-platform.">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 
 <style>
     :root {
-        color-scheme: dark;
-
-        --night: #07090d;
-        --panel: #0e131b;
-        --panel-2: #121925;
-        --line: rgba(150, 180, 215, 0.13);
-        --line-strong: rgba(150, 180, 215, 0.28);
-        --text: #e6edf6;
-        --muted: #8390a3;
-        --bolt: #5cc8ff;
-        --bolt-bright: #cfeeff;
-        --violet: #8193ff;
-        --on: #4ade80;
-        --off: #ff4d62;
-        --amber: #f5b942;
-
-        --display: "Oxanium", "Segoe UI", system-ui, sans-serif;
-        --body: "Barlow", "Segoe UI", system-ui, sans-serif;
-        --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
-
+        --bg: #ffffff;
+        --bg-soft: #f5f7fb;
+        --surface: #ffffff;
+        --border: #e7eaf0;
+        --border-strong: #d7dce6;
+        --text: #0f1726;
+        --muted: #5a6677;
+        --accent: #2f6bff;
+        --accent-hover: #1f55e6;
+        --accent-soft: rgba(47, 107, 255, 0.10);
+        --on: #16a34a;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.06);
+        --shadow-lg: 0 24px 60px rgba(16, 24, 40, 0.12);
+        --radius: 16px;
         --wrap: 1120px;
+        --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #0b0f17;
+            --bg-soft: #0f1621;
+            --surface: #121a27;
+            --border: rgba(255, 255, 255, 0.08);
+            --border-strong: rgba(255, 255, 255, 0.16);
+            --text: #e9eef6;
+            --muted: #9aa7b8;
+            --accent: #5b8cff;
+            --accent-hover: #7aa2ff;
+            --accent-soft: rgba(91, 140, 255, 0.14);
+            --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+            --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.5);
+        }
     }
 
     * { box-sizing: border-box; }
 
-    html { background: var(--night); scroll-behavior: smooth; }
+    html { scroll-behavior: smooth; }
 
     body {
         margin: 0;
-        background:
-            radial-gradient(1100px 520px at 78% -8%, rgba(92, 200, 255, 0.13), transparent 62%),
-            radial-gradient(900px 480px at -10% 30%, rgba(129, 147, 255, 0.08), transparent 60%),
-            var(--night);
+        background: var(--bg);
         color: var(--text);
-        font-family: var(--body);
+        font-family: var(--font);
         font-size: 17px;
         line-height: 1.6;
         -webkit-font-smoothing: antialiased;
         overflow-x: hidden;
     }
 
-    body::before {
-        content: "";
-        position: fixed;
-        inset: -40% 0 0 0;
-        pointer-events: none;
-        background-image: repeating-linear-gradient(
-            104deg,
-            transparent 0 46px,
-            rgba(160, 200, 240, 0.05) 46px 47px
-        );
-        background-size: 100% 180px;
-        animation: rain 1.6s linear infinite;
-        z-index: 0;
-    }
+    a { color: inherit; text-decoration: none; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
 
-    @keyframes rain { to { transform: translateY(180px); } }
-    @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
-
-    main, header, footer { position: relative; z-index: 1; }
+    h1, h2, h3 { margin: 0; line-height: 1.12; letter-spacing: -0.02em; text-wrap: balance; }
 
     .wrap { max-width: var(--wrap); margin: 0 auto; padding-inline: 24px; }
 
-    a { color: inherit; text-decoration: none; }
-    a, button, summary { -webkit-tap-highlight-color: transparent; }
-    :focus-visible { outline: 2px solid var(--bolt); outline-offset: 3px; border-radius: 6px; }
+    /* ---------- Buttons ---------- */
 
-    h1, h2, h3 { font-family: var(--display); line-height: 1.1; text-wrap: balance; margin: 0; }
-
-    .eyebrow {
-        font-family: var(--mono);
-        font-size: 0.78rem;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: var(--bolt);
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        font-family: inherit;
+        font-weight: 600;
+        font-size: 0.98rem;
+        padding: 13px 22px;
+        border-radius: 12px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s, transform 0.12s, box-shadow 0.15s;
+        white-space: nowrap;
     }
+    .btn svg { width: 18px; height: 18px; }
+
+    .btn-primary { color: #fff; background: var(--accent); box-shadow: var(--shadow); }
+    .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+
+    .btn-ghost { color: var(--text); background: var(--surface); border-color: var(--border-strong); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    .btn-sm { padding: 9px 16px; font-size: 0.9rem; }
 
     /* ---------- Header ---------- */
 
     header {
         position: sticky;
         top: 0;
-        backdrop-filter: blur(12px);
-        background: rgba(7, 9, 13, 0.72);
-        border-bottom: 1px solid var(--line);
+        z-index: 20;
+        background: color-mix(in srgb, var(--bg) 82%, transparent);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--border);
     }
+    .nav { display: flex; align-items: center; justify-content: space-between; height: 70px; }
 
-    .nav {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        height: 68px;
+    .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; font-size: 1.08rem; letter-spacing: -0.01em; }
+    .brand .mark {
+        display: grid; place-items: center;
+        width: 36px; height: 36px; border-radius: 10px;
+        color: #fff; background: var(--accent);
+        box-shadow: var(--shadow);
     }
-
-    .brand {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        font-family: var(--display);
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        font-size: 1.05rem;
-    }
-
-    .brand .bolt {
-        display: grid;
-        place-items: center;
-        width: 34px;
-        height: 34px;
-        border-radius: 9px;
-        color: var(--bolt);
-        background: rgba(92, 200, 255, 0.12);
-        border: 1px solid var(--line-strong);
-        box-shadow: 0 0 20px rgba(92, 200, 255, 0.25);
-    }
-
-    .nav-links { display: flex; align-items: center; gap: 10px; }
-    .nav-links .ghost { color: var(--muted); padding: 8px 12px; font-weight: 600; }
-    .nav-links .ghost:hover { color: var(--text); }
-
-    /* ---------- Buttons ---------- */
-
-    .btn {
-        white-space: nowrap;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        font-family: var(--display);
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        font-size: 0.92rem;
-        padding: 13px 22px;
-        border-radius: 12px;
-        border: 1px solid transparent;
-        cursor: pointer;
-        transition: transform 0.12s ease, box-shadow 0.2s ease, background 0.2s;
-    }
-
-    .btn-primary {
-        color: #04222e;
-        background: linear-gradient(180deg, var(--bolt-bright), var(--bolt));
-        box-shadow: 0 10px 30px rgba(92, 200, 255, 0.28);
-    }
-    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 14px 38px rgba(92, 200, 255, 0.4); }
-
-    .btn-outline {
-        color: var(--text);
-        background: var(--panel);
-        border-color: var(--line-strong);
-    }
-    .btn-outline:hover { border-color: var(--bolt); color: var(--bolt-bright); }
-
-    .btn svg { width: 18px; height: 18px; }
+    .nav-right { display: flex; align-items: center; gap: 10px; }
+    .nav-right .link { color: var(--muted); font-weight: 500; padding: 8px 10px; }
+    .nav-right .link:hover { color: var(--text); }
 
     /* ---------- Hero ---------- */
 
-    .hero { padding: 86px 0 64px; }
+    .hero { padding: 92px 0 72px; text-align: center; }
+
+    .badge {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 6px 14px; border-radius: 999px;
+        background: var(--accent-soft); color: var(--accent);
+        font-size: 0.85rem; font-weight: 600;
+        border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+    .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
     .hero h1 {
-        font-size: clamp(2.6rem, 8vw, 4.6rem);
+        font-size: clamp(2.5rem, 6.5vw, 4.4rem);
         font-weight: 800;
-        margin: 18px 0 0;
+        margin: 24px auto 0;
+        max-width: 14ch;
     }
-    .hero h1 .accent { color: var(--bolt); }
-
-    .lede {
-        max-width: 620px;
-        margin: 22px 0 0;
-        color: #c2cbd8;
-        font-size: 1.12rem;
+    .hero .lede {
+        max-width: 600px; margin: 22px auto 0;
+        color: var(--muted); font-size: 1.16rem;
     }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 34px; }
 
-    .cta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }
-
-    .specs {
-        margin-top: 48px;
-        display: grid;
-        gap: 8px;
-        font-family: var(--mono);
-        color: var(--muted);
-        font-size: 0.95rem;
+    .platforms {
+        display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+        margin-top: 40px;
     }
-    .specs span { color: var(--bolt); margin-right: 8px; }
-
-    /* ---------- How it works ---------- */
-
-    section.block { padding: 70px 0; border-top: 1px solid var(--line); }
-
-    .section-head { max-width: 640px; margin-bottom: 40px; }
-    .section-head h2 { font-size: clamp(1.8rem, 5vw, 2.6rem); font-weight: 700; margin-top: 10px; }
-    .section-head p { color: var(--muted); margin: 14px 0 0; }
-
-    .steps { display: grid; gap: 18px; grid-template-columns: repeat(3, 1fr); }
-
-    .step {
-        background: linear-gradient(180deg, var(--panel-2), var(--panel));
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 26px;
+    .chip {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 7px 14px; border-radius: 999px;
+        border: 1px solid var(--border); background: var(--surface);
+        color: var(--muted); font-size: 0.86rem; font-weight: 500;
     }
-    .step .num {
-        font-family: var(--mono);
-        color: var(--bolt);
-        font-size: 0.85rem;
-        letter-spacing: 0.1em;
-    }
-    .step h3 { font-size: 1.3rem; font-weight: 700; margin: 12px 0 8px; }
-    .step p { color: var(--muted); margin: 0; font-size: 0.98rem; }
+    .chip svg { width: 15px; height: 15px; color: var(--accent); }
 
-    /* ---------- Feature grid ---------- */
+    /* ---------- App preview mock ---------- */
 
-    .features { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); }
-    .feature {
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 24px;
-        background: rgba(18, 25, 37, 0.5);
+    .preview {
+        max-width: 880px; margin: 64px auto 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        box-shadow: var(--shadow-lg);
+        overflow: hidden;
     }
-    .feature .ic {
-        width: 40px; height: 40px; border-radius: 10px;
+    .preview-bar {
+        display: flex; align-items: center; gap: 7px;
+        padding: 14px 18px; border-bottom: 1px solid var(--border);
+    }
+    .preview-bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); display: inline-block; }
+    .preview-bar span { margin-left: 10px; color: var(--muted); font-size: 0.82rem; }
+    .preview-body { padding: 22px; display: grid; gap: 14px; grid-template-columns: repeat(3, 1fr); }
+    .mini {
+        border: 1px solid var(--border); border-radius: 14px; padding: 16px;
+        background: var(--bg-soft);
+    }
+    .mini .top { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 10px; }
+    .mini .live { width: 9px; height: 9px; border-radius: 50%; background: var(--on); box-shadow: 0 0 0 3px color-mix(in srgb, var(--on) 22%, transparent); }
+    .mini .meta { color: var(--muted); font-size: 0.8rem; line-height: 1.6; }
+    .mini .btns { display: flex; gap: 6px; margin-top: 12px; }
+    .mini .tag { font-size: 0.72rem; font-weight: 600; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border-strong); color: var(--muted); }
+    .mini .tag.danger { color: #dc2626; border-color: color-mix(in srgb, #dc2626 40%, transparent); }
+
+    /* ---------- Sections ---------- */
+
+    section.block { padding: 86px 0; }
+    section.alt { background: var(--bg-soft); border-block: 1px solid var(--border); }
+
+    .section-head { text-align: center; max-width: 640px; margin: 0 auto 52px; }
+    .section-head .kicker { color: var(--accent); font-weight: 600; font-size: 0.9rem; letter-spacing: 0.02em; }
+    .section-head h2 { font-size: clamp(1.9rem, 4.5vw, 2.7rem); font-weight: 800; margin-top: 12px; }
+    .section-head p { color: var(--muted); margin: 16px 0 0; }
+
+    .grid3 { display: grid; gap: 22px; grid-template-columns: repeat(3, 1fr); }
+
+    .card {
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 28px; box-shadow: var(--shadow);
+    }
+    .card .ic {
+        width: 46px; height: 46px; border-radius: 12px;
         display: grid; place-items: center;
-        background: rgba(92, 200, 255, 0.1);
-        border: 1px solid var(--line-strong);
-        color: var(--bolt);
-        margin-bottom: 14px;
+        background: var(--accent-soft); color: var(--accent);
+        margin-bottom: 18px;
     }
-    .feature h3 { font-size: 1.12rem; font-weight: 700; margin: 0 0 6px; }
-    .feature p { color: var(--muted); margin: 0; font-size: 0.95rem; }
+    .card h3 { font-size: 1.22rem; font-weight: 700; margin-bottom: 8px; }
+    .card p { color: var(--muted); margin: 0; font-size: 0.98rem; }
+
+    .step-num {
+        display: inline-grid; place-items: center;
+        width: 34px; height: 34px; border-radius: 10px;
+        background: var(--accent); color: #fff;
+        font-weight: 700; font-size: 0.95rem; margin-bottom: 18px;
+    }
 
     /* ---------- Final CTA ---------- */
 
-    .final {
+    .cta-band {
         text-align: center;
-        background:
-            radial-gradient(600px 240px at 50% 0%, rgba(92, 200, 255, 0.14), transparent 70%),
-            var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 22px;
-        padding: 60px 24px;
-        margin: 20px 0 0;
+        background: var(--accent);
+        border-radius: 24px;
+        padding: 64px 28px;
+        box-shadow: var(--shadow-lg);
     }
-    .final h2 { font-size: clamp(1.9rem, 5vw, 2.8rem); font-weight: 800; }
-    .final p { color: var(--muted); max-width: 500px; margin: 14px auto 28px; }
+    .cta-band h2 { color: #fff; font-size: clamp(1.9rem, 4.5vw, 2.8rem); font-weight: 800; }
+    .cta-band p { color: rgba(255, 255, 255, 0.86); max-width: 480px; margin: 16px auto 30px; }
+    .cta-band .btn-primary { background: #fff; color: var(--accent); }
+    .cta-band .btn-primary:hover { background: #f1f4ff; }
 
     /* ---------- Footer ---------- */
 
-    footer {
-        border-top: 1px solid var(--line);
-        margin-top: 70px;
-        padding: 30px 0;
-        color: var(--muted);
-        font-size: 0.9rem;
-    }
-    .foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-
-    .warn-note {
-        font-family: var(--mono);
-        font-size: 0.82rem;
-        color: var(--amber);
-        margin-top: 10px;
-    }
+    footer { border-top: 1px solid var(--border); padding: 32px 0; color: var(--muted); font-size: 0.9rem; }
+    .foot { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+    .foot .brand { font-size: 0.98rem; }
+    .foot .mark { width: 28px; height: 28px; border-radius: 8px; }
 
     @media (max-width: 820px) {
-        .steps, .features { grid-template-columns: 1fr; }
-        .nav-links .hide-sm { display: none; }
-        .hero { padding: 60px 0 40px; }
+        .grid3 { grid-template-columns: 1fr; }
+        .preview-body { grid-template-columns: 1fr; }
+        .nav-right .hide-sm { display: none; }
+        .hero { padding: 64px 0 48px; }
+        section.block { padding: 60px 0; }
     }
 </style>
 </head>
@@ -288,19 +250,19 @@
 
 <header>
     <div class="wrap nav">
-        <div class="brand">
-            <span class="bolt">
+        <a class="brand" href="#">
+            <span class="mark">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-                    <line x1="12" y1="2" x2="12" y2="12"></line>
+                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line>
                 </svg>
             </span>
             Amos Solutions
-        </div>
-        <div class="nav-links">
-            <a class="ghost hide-sm" href="#how">How it works</a>
-            <a class="btn btn-primary" href="https://api.amos.fyi">Open panel</a>
+        </a>
+        <div class="nav-right">
+            <a class="link hide-sm" href="#how">How it works</a>
+            <a class="link hide-sm" href="#features">Features</a>
+            <a class="btn btn-primary btn-sm" href="https://api.amos.fyi">Open panel</a>
         </div>
     </div>
 </header>
@@ -308,104 +270,120 @@
 <main>
     <section class="hero">
         <div class="wrap">
-            <p class="eyebrow">Remote power control</p>
-            <h1>Shut down your PC.<br><span class="accent">From anywhere.</span></h1>
+            <span class="badge"><span class="dot"></span> Remote power control</span>
+            <h1>Turn off your computer from anywhere.</h1>
             <p class="lede">
-                Remote Power turns your computer off, restarts it, or locks the screen
-                from a clean dashboard in your browser — whether you're in the next room
-                or on the other side of the world. No port forwarding, no fuss.
+                Shut down, restart or lock your PC right from your browser — whether
+                you're in the next room or halfway across the world. No cables, no
+                setup headaches.
             </p>
             <div class="cta-row">
-                <a class="btn btn-primary" href="https://api.amos.fyi">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                         stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line>
-                    </svg>
-                    Open control panel
-                </a>
-                <a class="btn btn-outline" href="#how">See how it works</a>
+                <a class="btn btn-primary" href="https://api.amos.fyi">Open control panel</a>
+                <a class="btn btn-ghost" href="#how">See how it works</a>
             </div>
-            <div class="specs">
-                <div><span>/</span>Windows, macOS &amp; Linux</div>
-                <div><span>/</span>Works behind any home router</div>
-                <div><span>/</span>Encrypted over HTTPS</div>
+            <div class="platforms">
+                <span class="chip">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3zM3 12.5h7.5v7.1L3 18.5zM11.5 4.2 21 3v8.5h-9.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>
+                    Windows
+                </span>
+                <span class="chip">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 12.5c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.8-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.8 3-.8s1.8.8 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.4-1-2.4-3.6zM14.3 5.4c.6-.8 1-1.9.9-3-1 0-2.1.7-2.8 1.5-.6.7-1.1 1.8-.9 2.9 1.1.1 2.2-.6 2.8-1.4z"/></svg>
+                    macOS
+                </span>
+                <span class="chip">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/></svg>
+                    Linux
+                </span>
+            </div>
+
+            <!-- lightweight product preview -->
+            <div class="preview" aria-hidden="true">
+                <div class="preview-bar">
+                    <i></i><i></i><i></i>
+                    <span>api.amos.fyi — Your devices</span>
+                </div>
+                <div class="preview-body">
+                    <div class="mini">
+                        <div class="top"><span class="live"></span> Home PC</div>
+                        <div class="meta">Online · Windows 11<br>Last seen just now</div>
+                        <div class="btns"><span class="tag danger">Shut down</span><span class="tag">Lock</span></div>
+                    </div>
+                    <div class="mini">
+                        <div class="top"><span class="live"></span> Work Laptop</div>
+                        <div class="meta">Online · macOS<br>Last seen 1m ago</div>
+                        <div class="btns"><span class="tag danger">Shut down</span><span class="tag">Restart</span></div>
+                    </div>
+                    <div class="mini">
+                        <div class="top"><span class="live" style="background:#94a3b8;box-shadow:none"></span> Media Server</div>
+                        <div class="meta">Offline · Linux<br>Last seen 2h ago</div>
+                        <div class="btns"><span class="tag danger">Shut down</span><span class="tag">Lock</span></div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
 
-    <section class="block" id="how">
+    <section class="block alt" id="how">
         <div class="wrap">
             <div class="section-head">
-                <p class="eyebrow">Three pieces</p>
+                <div class="kicker">Simple by design</div>
                 <h2>How it works</h2>
-                <p>
-                    A small relay runs on your server. Your PC quietly checks in with it,
-                    and the web panel sends the command. Because your PC only reaches
-                    <em>out</em>, it works from behind any router with nothing to open.
-                </p>
+                <p>Three small pieces that just work together. Because your computer
+                   only reaches out, there's nothing to open on your router.</p>
             </div>
-            <div class="steps">
-                <div class="step">
-                    <div class="num">01 — SERVER</div>
-                    <h3>The relay</h3>
-                    <p>A tiny Flask app with its own database, hosted on your server at
-                       api.amos.fyi. It holds your devices and the commands you queue.</p>
+            <div class="grid3">
+                <div class="card">
+                    <div class="step-num">1</div>
+                    <h3>Set it up once</h3>
+                    <p>A small, secure service runs on your own server and keeps track
+                       of your computers.</p>
                 </div>
-                <div class="step">
-                    <div class="num">02 — YOUR PC</div>
-                    <h3>The listener</h3>
-                    <p>A lightweight Python program runs in the background and asks the
-                       relay every few seconds whether there's anything to do.</p>
+                <div class="card">
+                    <div class="step-num">2</div>
+                    <h3>Add your computer</h3>
+                    <p>Install a lightweight helper on each PC. It quietly checks in and
+                       waits for your command.</p>
                 </div>
-                <div class="step">
-                    <div class="num">03 — ANYWHERE</div>
-                    <h3>The panel</h3>
-                    <p>Sign in from any browser, see which PCs are online, and press
-                       Shut down, Restart or Lock. The command lands on the next check-in.</p>
+                <div class="card">
+                    <div class="step-num">3</div>
+                    <h3>Control from anywhere</h3>
+                    <p>Open the dashboard in any browser and power your computer off,
+                       restart it, or lock the screen.</p>
                 </div>
             </div>
         </div>
     </section>
 
-    <section class="block">
+    <section class="block" id="features">
         <div class="wrap">
             <div class="section-head">
-                <p class="eyebrow">Built right</p>
-                <h2>What you get</h2>
+                <div class="kicker">Thoughtfully built</div>
+                <h2>Everything you need, nothing you don't</h2>
             </div>
-            <div class="features">
-                <div class="feature">
+            <div class="grid3">
+                <div class="card">
                     <div class="ic">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line>
-                        </svg>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                     </div>
-                    <h3>Live device list</h3>
-                    <p>Online/offline status, last-seen time, IP and OS for every PC,
-                       refreshed automatically.</p>
+                    <h3>See every device</h3>
+                    <p>A clean dashboard shows which computers are online, when you last
+                       saw them, and where they are.</p>
                 </div>
-                <div class="feature">
+                <div class="card">
                     <div class="ic">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M12 2L4 5v6c0 5 3.5 8 8 11 4.5-3 8-6 8-11V5l-8-3z"></path>
-                        </svg>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 8 8 11 4.5-3 8-6 8-11V5l-8-3z"/></svg>
                     </div>
-                    <h3>Locked down</h3>
-                    <p>Password-protected panel, per-device keys, HTTPS only, brute-force
-                       lockout and CSRF protection.</p>
+                    <h3>Private &amp; secure</h3>
+                    <p>Password-protected, encrypted over HTTPS, with per-device keys you
+                       can revoke any time. It runs on your server, not ours.</p>
                 </div>
-                <div class="feature">
+                <div class="card">
                     <div class="ic">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>
-                        </svg>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     </div>
-                    <h3>Instant commands</h3>
-                    <p>Shut down, restart or lock in a tap — and cancel a queued command
-                       before your PC picks it up.</p>
+                    <h3>One tap, done</h3>
+                    <p>Shut down, restart or lock in a single tap — and cancel a command
+                       before it lands if you change your mind.</p>
                 </div>
             </div>
         </div>
@@ -413,10 +391,10 @@
 
     <section class="block">
         <div class="wrap">
-            <div class="final">
-                <h2>Ready when you are.</h2>
-                <p>Open the panel, add your PC, and you're one tap from powering it off
-                   from anywhere.</p>
+            <div class="cta-band">
+                <h2>Ready when you are</h2>
+                <p>Open the panel, add your computer, and you're one tap away from
+                   powering it off from anywhere.</p>
                 <a class="btn btn-primary" href="https://api.amos.fyi">Open control panel</a>
             </div>
         </div>
@@ -425,8 +403,13 @@
 
 <footer>
     <div class="wrap foot">
-        <div>© Amos Solutions · Remote Power</div>
-        <div>api.amos.fyi</div>
+        <div class="brand">
+            <span class="mark">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+            </span>
+            Amos Solutions
+        </div>
+        <div>© 2026 Amos Solutions · Remote Power</div>
     </div>
 </footer>
 
