@@ -19,7 +19,12 @@ Setup
         device     = <a name, just for your reference>
 4.  python listener.py
 
-Leave it running (see the README for how to start it automatically at login).
+To run it automatically and silently at every login (no terminal window),
+use the installer for your OS instead of step 4:
+    Windows : double-click install-windows.bat   (uninstall-windows.bat removes it)
+    macOS   : bash install-macos.sh
+    Linux   : bash install-linux.sh
+Activity is written to listener.log next to this script.
 
 Safety
 ------
@@ -30,16 +35,55 @@ dry_run below while testing.
 """
 
 import configparser
+import logging
 import os
 import platform
 import subprocess
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 
 try:
     import requests
 except ImportError:
     sys.exit("The 'requests' package is required. Run:  pip install requests")
+
+
+# --------------------------------------------------------------------------
+# Logging — writes to listener.log so it works with no console (pythonw /
+# background service), and also to the console when one is attached.
+# --------------------------------------------------------------------------
+
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "listener.log")
+
+
+def setup_logging():
+    logger = logging.getLogger("remote-power")
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s  %(levelname)s  %(message)s", "%Y-%m-%d %H:%M:%S")
+    try:
+        fh = RotatingFileHandler(LOG_PATH, maxBytes=512_000, backupCount=2)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    except Exception:
+        pass
+    if sys.stdout is not None:  # None under pythonw.exe / detached processes
+        try:
+            ch = logging.StreamHandler(sys.stdout)
+            ch.setFormatter(fmt)
+            logger.addHandler(ch)
+        except Exception:
+            pass
+    return logger
+
+
+log = setup_logging()
+
+
+def fatal(message):
+    """Log a fatal error (to the file too) and exit cleanly without a console."""
+    log.error(message)
+    raise SystemExit(1)
 
 
 # --------------------------------------------------------------------------
@@ -50,10 +94,8 @@ def load_config():
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "config.ini")
     if not os.path.exists(path):
-        sys.exit(
-            "config.ini not found.\n"
-            "Copy config.example.ini to config.ini and fill in your API key."
-        )
+        fatal("config.ini not found. Copy config.example.ini to config.ini "
+              "and fill in your API key.")
 
     parser = configparser.ConfigParser()
     parser.read(path)
@@ -68,7 +110,7 @@ def load_config():
         "kind": section.get("kind", "auto").strip().lower(),
     }
     if not cfg["api_key"]:
-        sys.exit("No api_key set in config.ini. Add the key from the web panel.")
+        fatal("No api_key set in config.ini. Add the key from the web panel.")
     return cfg
 
 
@@ -174,7 +216,7 @@ def run_action(action, dry_run):
     system = platform.system()
 
     if dry_run:
-        print(f"[dry-run] would perform: {action}")
+        log.info("[dry-run] would perform: %s", action)
         return
 
     if action == "shutdown":
@@ -212,7 +254,7 @@ def run_action(action, dry_run):
                 except FileNotFoundError:
                     continue
     else:
-        print(f"Ignoring unknown action: {action}")
+        log.warning("Ignoring unknown action: %s", action)
 
 
 # --------------------------------------------------------------------------
@@ -227,11 +269,11 @@ def main():
 
     kind = resolve_kind(cfg)
 
-    print(f"Remote Power listener — device '{cfg['device']}' ({kind})")
-    print(f"Relay: {cfg['server_url']}  (polling every {cfg['poll_interval']}s)")
+    log.info("Remote Power listener — device '%s' (%s)", cfg["device"], kind)
+    log.info("Relay: %s  (polling every %ss)", cfg["server_url"], cfg["poll_interval"])
     if cfg["dry_run"]:
-        print("DRY RUN: commands will be logged but not executed.")
-    print("Running. Press Ctrl+C to stop.\n")
+        log.info("DRY RUN: commands will be logged but not executed.")
+    log.info("Running.")
 
     backoff = cfg["poll_interval"]
     while True:
@@ -243,7 +285,7 @@ def main():
                 timeout=15,
             )
             if resp.status_code == 401:
-                sys.exit("Server rejected the API key (401). Check config.ini.")
+                fatal("Server rejected the API key (401). Check config.ini.")
             resp.raise_for_status()
             data = resp.json()
             backoff = cfg["poll_interval"]  # reset after a good poll
@@ -251,7 +293,7 @@ def main():
             action = data.get("action")
             if action:
                 command_id = data.get("command_id")
-                print(f"Received command: {action}")
+                log.info("Received command: %s", action)
                 # Acknowledge first, so the panel shows it was delivered even if
                 # the machine powers off a moment later.
                 if command_id is not None:
@@ -268,7 +310,7 @@ def main():
 
         except requests.RequestException as exc:
             # Network hiccup — back off a little, then keep trying.
-            print(f"Connection problem: {exc}. Retrying in {backoff}s.")
+            log.warning("Connection problem: %s. Retrying in %ss.", exc, backoff)
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
             continue
@@ -280,4 +322,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        log.info("Stopped.")

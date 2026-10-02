@@ -114,12 +114,24 @@ python listener.py
 Set `dry_run = true` in `config.ini` while testing — commands are logged but
 not executed.
 
-### Start it automatically
+### Start it automatically (background, no terminal window)
 
-- **Windows:** put a shortcut to `pythonw listener.py` in
-  `shell:startup`, or create a Task Scheduler task "At log on".
-- **Linux:** a user `systemd` unit running `python listener.py`.
-- **macOS:** a LaunchAgent plist.
+Use the installer for the PC's OS — each one sets the listener to start
+silently at every login and keeps it running in the background:
+
+| OS | Install | Uninstall |
+|---|---|---|
+| Windows | double-click `install-windows.bat` | `uninstall-windows.bat` |
+| macOS | `bash install-macos.sh` | `launchctl unload …` (printed by installer) |
+| Linux | `bash install-linux.sh` | `systemctl --user disable --now remote-power-listener` |
+
+- **Windows** runs it with `pythonw.exe` from a Startup-folder launcher, so no
+  console window ever appears.
+- **macOS** installs a LaunchAgent; **Linux** a user `systemd` service.
+- Activity is logged to `client/listener.log` (rotating). On Linux you can also
+  use `journalctl --user -u remote-power-listener -f`.
+
+Run the installer only after `config.ini` is filled in.
 
 ## 4. Use it
 

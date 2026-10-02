@@ -2,6 +2,7 @@
 *.db
 .env
 client/config.ini
+*.log
 
 # Python
 __pycache__/
