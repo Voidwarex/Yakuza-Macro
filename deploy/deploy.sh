@@ -21,12 +21,21 @@ set -euo pipefail
 # ---- edit these to match your server ----
 WEB_ROOT="/var/www/amos"            # where nginx serves amos.fyi from
 APP_DIR="/opt/remote-power"          # where the relay lives/runs
-ENV_FILE="/etc/remote-power.env"     # ADMIN_PASSWORD, SECRET_KEY, etc.
+ENV_FILE="/etc/remote-power.env"     # SECRET_KEY, etc.
 SERVICE="remote-power"               # systemd unit name
-RUN_USER="www-data"                  # user the relay runs as
+RUN_USER="${RUN_USER:-auto}"         # web user; "auto" detects www-data/nginx
 # -----------------------------------------
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Pick the web-server user that exists on this distro (Debian: www-data,
+# RHEL/Fedora: nginx). Override by exporting RUN_USER before running.
+if [ "$RUN_USER" = "auto" ]; then
+    if id -u www-data >/dev/null 2>&1; then RUN_USER=www-data
+    elif id -u nginx >/dev/null 2>&1; then RUN_USER=nginx
+    else RUN_USER=root; fi
+fi
+echo "==> Service will run as user: $RUN_USER"
 
 echo "==> Publishing website to $WEB_ROOT"
 install -d "$WEB_ROOT"
@@ -69,4 +78,8 @@ nginx -t && systemctl reload nginx
 echo "==> Done."
 echo "    Website : https://amos.fyi"
 echo "    Panel   : https://api.amos.fyi"
+echo
+echo "    Create your admin account with:"
+echo "      sudo -u $RUN_USER $APP_DIR/venv/bin/python $APP_DIR/app.py createadmin you@example.com"
+echo
 systemctl --no-pager --full status "$SERVICE" | head -n 6 || true
