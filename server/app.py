@@ -149,9 +149,11 @@ def security_headers(resp):
     # Stripe Checkout is a hosted redirect, so no Stripe origins are needed in CSP.
     resp.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; style-src 'self'; script-src 'self'; "
-        "img-src 'self' data:; base-uri 'none'; form-action 'self'; "
-        "frame-ancestors 'none'",
+        "default-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "script-src 'self'; img-src 'self' data:; "
+        "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     )
     if _secure_cookies:
         resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
