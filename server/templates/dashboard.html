@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote Power — Devices</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+    <div class="topbar">
+        <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                <line x1="12" y1="2" x2="12" y2="12" />
+            </svg>
+            Remote Power
+        </div>
+        <a class="muted" href="{{ url_for('logout') }}">Sign out</a>
+    </div>
+
+    <div class="container">
+        <div class="row">
+            <div>
+                <h1>Your devices</h1>
+                <p class="subtitle">Send power commands to any PC running the listener.</p>
+            </div>
+            <button class="btn-green" onclick="openAddModal()">+ Add device</button>
+        </div>
+
+        <div id="grid" class="grid"></div>
+        <div id="empty" class="empty" style="display:none">
+            No devices yet. Click <b>Add device</b> to enroll your first PC.
+        </div>
+    </div>
+
+    <!-- Add-device modal -->
+    <div class="modal-backdrop" id="addModal">
+        <div class="modal">
+            <h2>Add a device</h2>
+            <div id="addStep1">
+                <input type="text" id="deviceName" placeholder="Device name (e.g. Home PC)" />
+                <div class="actions">
+                    <button class="btn-green" onclick="createDevice()">Create</button>
+                    <button class="btn-ghost" onclick="closeAddModal()">Cancel</button>
+                </div>
+            </div>
+            <div id="addStep2" style="display:none">
+                <p class="subtitle">Device created. Put this API key in the
+                    listener's <b>config.ini</b> on that PC:</p>
+                <div class="key-box" id="apiKeyBox"></div>
+                <p class="warn">⚠ This key is shown only once. Copy it now.</p>
+                <div class="actions">
+                    <button class="btn-green" onclick="copyKey()">Copy key</button>
+                    <button class="btn-ghost" onclick="finishAdd()">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

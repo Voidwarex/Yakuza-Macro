@@ -1,0 +1,24 @@
+# systemd unit for the Remote Power relay.
+#
+# Adjust the paths and the User, then:
+#   sudo cp deploy/remote-power.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now remote-power
+#
+# Put your secrets in /etc/remote-power.env (see server/config.example.env).
+
+[Unit]
+Description=Remote Power relay
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/remote-power/server
+EnvironmentFile=/etc/remote-power.env
+ExecStart=/usr/bin/python3 app.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

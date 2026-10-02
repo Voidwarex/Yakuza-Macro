@@ -1,0 +1,340 @@
+:root {
+    --bg: #09090b;
+    --card-bg: #18181b;
+    --card-border: #27272a;
+
+    --text-primary: #f4f4f5;
+    --text-muted: #a1a1aa;
+
+    --accent-green: #22c55e;
+    --accent-green-hover: #16a34a;
+
+    --accent-red: #ef4444;
+    --accent-red-hover: #dc2626;
+
+    --accent-amber: #f59e0b;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text-primary);
+    min-height: 100vh;
+    background-image: radial-gradient(
+        circle at 50% 0%,
+        rgba(34, 197, 94, 0.08) 0%,
+        rgba(9, 9, 11, 1) 60%
+    );
+}
+
+a {
+    color: var(--accent-green);
+    text-decoration: none;
+}
+
+.topbar {
+    height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 32px;
+    border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 700;
+    font-size: 1.2rem;
+}
+
+.logo svg {
+    color: var(--accent-green);
+}
+
+.topbar .muted {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.container {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 40px 24px;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+}
+
+h1 {
+    font-size: 1.6rem;
+    font-weight: 700;
+}
+
+.subtitle {
+    color: var(--text-muted);
+    margin-top: 4px;
+    font-size: 0.95rem;
+}
+
+/* ---- buttons ---- */
+
+button,
+.btn {
+    font: inherit;
+    font-weight: 600;
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    padding: 10px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+button:hover,
+.btn:hover {
+    border-color: #3f3f46;
+}
+
+.btn-green {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+    color: #052e16;
+}
+
+.btn-green:hover {
+    background: var(--accent-green-hover);
+    border-color: var(--accent-green-hover);
+}
+
+.btn-red {
+    background: transparent;
+    border-color: var(--accent-red);
+    color: var(--accent-red);
+}
+
+.btn-red:hover {
+    background: var(--accent-red);
+    color: #fff;
+}
+
+.btn-amber {
+    background: transparent;
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
+}
+
+.btn-amber:hover {
+    background: var(--accent-amber);
+    color: #1a1203;
+}
+
+.btn-ghost {
+    background: transparent;
+}
+
+.btn-sm {
+    padding: 7px 12px;
+    font-size: 0.85rem;
+}
+
+/* ---- cards / device grid ---- */
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 18px;
+}
+
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 20px;
+}
+
+.card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+
+.device-name {
+    font-weight: 700;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #52525b;
+    flex-shrink: 0;
+}
+
+.dot.online {
+    background: var(--accent-green);
+    box-shadow: 0 0 8px var(--accent-green);
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    line-height: 1.7;
+    margin-bottom: 16px;
+    word-break: break-all;
+}
+
+.meta b {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.badge {
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--accent-amber);
+    font-weight: 600;
+}
+
+.empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 60px 20px;
+    border: 1px dashed var(--card-border);
+    border-radius: 12px;
+}
+
+/* ---- login ---- */
+
+.login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+
+.login-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 36px;
+    width: 100%;
+    max-width: 380px;
+}
+
+.login-card .logo {
+    justify-content: center;
+    margin-bottom: 8px;
+    font-size: 1.4rem;
+}
+
+.login-card p.subtitle {
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+input[type="password"],
+input[type="text"] {
+    width: 100%;
+    font: inherit;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-primary);
+    padding: 12px 14px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+}
+
+input:focus {
+    outline: none;
+    border-color: var(--accent-green);
+}
+
+.error {
+    color: var(--accent-red);
+    font-size: 0.88rem;
+    margin-bottom: 14px;
+    text-align: center;
+}
+
+.full {
+    width: 100%;
+}
+
+/* ---- modal ---- */
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 50;
+}
+
+.modal-backdrop.show {
+    display: flex;
+}
+
+.modal {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 28px;
+    width: 100%;
+    max-width: 460px;
+}
+
+.modal h2 {
+    margin-bottom: 16px;
+    font-size: 1.2rem;
+}
+
+.key-box {
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    word-break: break-all;
+    margin: 12px 0;
+    color: var(--accent-green);
+}
+
+.warn {
+    color: var(--accent-amber);
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+}

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote Power — Sign in</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+    <div class="login-wrap">
+        <form class="login-card" method="post">
+            <div class="logo">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                     stroke-linejoin="round">
+                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                    <line x1="12" y1="2" x2="12" y2="12" />
+                </svg>
+                Remote Power
+            </div>
+            <p class="subtitle">Sign in to control your devices</p>
+
+            {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+            <input type="password" name="password" placeholder="Panel password"
+                   autofocus autocomplete="current-password" />
+            <button type="submit" class="btn-green full">Sign in</button>
+        </form>
+    </div>
+</body>
+</html>

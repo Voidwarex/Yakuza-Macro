@@ -1,0 +1,10 @@
+# Secrets and local state — never commit these
+*.db
+.env
+client/config.ini
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
