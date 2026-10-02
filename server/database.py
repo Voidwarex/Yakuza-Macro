@@ -71,6 +71,24 @@ def init_db():
             )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id   INTEGER NOT NULL,
+                action      TEXT NOT NULL,
+                kind        TEXT NOT NULL,              -- once | daily | weekly
+                at_minute   INTEGER,                    -- minutes since local midnight (recurring)
+                weekday     INTEGER,                    -- 0=Mon..6=Sun (weekly), else NULL
+                tz_offset   INTEGER NOT NULL DEFAULT 0, -- minutes local is ahead of UTC
+                next_run_at REAL,                       -- epoch UTC of next fire
+                last_run_at REAL,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  REAL NOT NULL,
+                FOREIGN KEY (device_id) REFERENCES devices (id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS commands (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 device_id   INTEGER NOT NULL,
@@ -262,3 +280,76 @@ def pending_count(device_id):
             (device_id,),
         ).fetchone()
         return row["n"]
+
+
+# --------------------------------------------------------------------------
+# Schedules
+# --------------------------------------------------------------------------
+
+def create_schedule(device_id, action, kind, at_minute, weekday, tz_offset, next_run_at):
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO schedules (device_id, action, kind, at_minute, weekday, "
+            "tz_offset, next_run_at, enabled, created_at) VALUES (?,?,?,?,?,?,?,1,?)",
+            (device_id, action, kind, at_minute, weekday, tz_offset, next_run_at,
+             time.time()),
+        )
+        return cur.lastrowid
+
+
+def list_schedules_for_device(device_id):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM schedules WHERE device_id = ? AND enabled = 1 "
+            "ORDER BY next_run_at",
+            (device_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def schedule_count(device_id):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM schedules WHERE device_id = ? AND enabled = 1",
+            (device_id,),
+        ).fetchone()
+        return row["n"]
+
+
+def get_schedule(schedule_id):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def delete_schedule(schedule_id, device_ids):
+    """Delete a schedule only if it belongs to one of the user's devices."""
+    if not device_ids:
+        return
+    placeholders = ",".join("?" * len(device_ids))
+    with get_conn() as conn:
+        conn.execute(
+            f"DELETE FROM schedules WHERE id = ? AND device_id IN ({placeholders})",
+            (schedule_id, *device_ids),
+        )
+
+
+def due_schedules(now_ts):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL "
+            "AND next_run_at <= ?",
+            (now_ts,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_schedule_fired(schedule_id, last_run_at, next_run_at, enabled):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE schedules SET last_run_at = ?, next_run_at = ?, enabled = ? "
+            "WHERE id = ?",
+            (last_run_at, next_run_at, 1 if enabled else 0, schedule_id),
+        )

@@ -121,6 +121,7 @@ async function loadDevices() {
                     <button class="btn-amber btn-sm" data-act="restart" data-id="${d.id}">Restart</button>
                     <button class="btn-sm" data-act="lock" data-id="${d.id}">Lock</button>
                     ${cancelBtn}
+                    <button class="btn-ghost btn-sm" data-act="schedule" data-id="${d.id}" data-name="${esc(d.name)}">Schedule</button>
                     <button class="btn-ghost btn-sm" data-act="remove" data-id="${d.id}" data-name="${esc(d.name)}">Remove</button>
                 </div>
             </div>`;
@@ -242,6 +243,113 @@ async function manageBilling() {
     else alert(data.error || "Could not open billing portal.");
 }
 
+// ---- schedules ----
+
+const CAN_SCHEDULE = document.body.getAttribute("data-can-schedule") === "true";
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+let schDeviceId = null;
+
+function actionLabel(a) {
+    return { shutdown: "Shut down", restart: "Restart", lock: "Lock" }[a] || a;
+}
+
+function fmtMinute(m) {
+    const h = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    return `${h}:${mm}`;
+}
+
+function describeSchedule(s) {
+    const act = actionLabel(s.action);
+    if (s.kind === "once") {
+        const when = s.next_run_at ? new Date(s.next_run_at * 1000).toLocaleString() : "—";
+        return `${act} once · ${when}`;
+    }
+    if (s.kind === "daily") return `${act} daily at ${fmtMinute(s.at_minute)}`;
+    if (s.kind === "weekly") return `${act} every ${DAYS[s.weekday]} at ${fmtMinute(s.at_minute)}`;
+    return act;
+}
+
+async function openScheduleModal(id, name) {
+    schDeviceId = id;
+    document.getElementById("schDeviceName").textContent = name;
+    document.getElementById("schLocked").style.display = CAN_SCHEDULE ? "none" : "block";
+    document.getElementById("schBody").style.display = CAN_SCHEDULE ? "block" : "none";
+    document.getElementById("scheduleModal").classList.add("show");
+    if (CAN_SCHEDULE) loadSchedules();
+}
+
+function closeScheduleModal() {
+    document.getElementById("scheduleModal").classList.remove("show");
+    schDeviceId = null;
+}
+
+async function loadSchedules() {
+    const res = await fetch(`/panel/devices/${schDeviceId}/schedules`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const list = document.getElementById("schList");
+    const items = data.schedules || [];
+    if (!items.length) {
+        list.innerHTML = `<div class="sch-empty">No schedules yet. Add one below.</div>`;
+        return;
+    }
+    list.innerHTML = items
+        .map(
+            (s) => `
+        <div class="sch-row">
+            <span>${esc(describeSchedule(s))}</span>
+            <button class="btn-ghost btn-sm" data-sch="${s.id}">Delete</button>
+        </div>`
+        )
+        .join("");
+}
+
+function onKindChange() {
+    const kind = document.getElementById("schKind").value;
+    document.getElementById("schDateTime").style.display = kind === "once" ? "" : "none";
+    document.getElementById("schTime").style.display = kind === "once" ? "none" : "";
+    document.getElementById("schWeekday").style.display = kind === "weekly" ? "" : "none";
+}
+
+async function addSchedule() {
+    const kind = document.getElementById("schKind").value;
+    const action = document.getElementById("schAction").value;
+    const tz_offset = -new Date().getTimezoneOffset(); // minutes local is ahead of UTC
+    const payload = { action, kind, tz_offset };
+
+    if (kind === "once") {
+        const v = document.getElementById("schDateTime").value;
+        if (!v) return alert("Pick a date and time.");
+        payload.run_at = Math.floor(new Date(v).getTime() / 1000);
+    } else {
+        const t = document.getElementById("schTime").value;
+        if (!t) return alert("Pick a time.");
+        const [h, m] = t.split(":").map(Number);
+        payload.at_minute = h * 60 + m;
+        if (kind === "weekly") payload.weekday = Number(document.getElementById("schWeekday").value);
+    }
+
+    const res = await api(`/panel/devices/${schDeviceId}/schedules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 402) {
+        closeScheduleModal();
+        openUpgradeModal();
+        return;
+    }
+    if (!res.ok) return alert(data.error || data.message || "Could not add schedule.");
+    loadSchedules();
+}
+
+async function deleteSchedule(id) {
+    await api(`/panel/schedules/${id}`, { method: "DELETE" });
+    loadSchedules();
+}
+
 // ---- wiring ----
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -271,8 +379,24 @@ document.addEventListener("DOMContentLoaded", () => {
         const id = btn.getAttribute("data-id");
         const act = btn.getAttribute("data-act");
         if (act === "remove") removeDevice(id, btn.getAttribute("data-name"));
+        else if (act === "schedule") openScheduleModal(id, btn.getAttribute("data-name"));
         else cmd(id, act);
     });
+
+    // schedule modal
+    document.getElementById("schClose").addEventListener("click", closeScheduleModal);
+    document.getElementById("schCloseLocked").addEventListener("click", closeScheduleModal);
+    document.getElementById("schUpgradeBtn").addEventListener("click", () => {
+        closeScheduleModal();
+        openUpgradeModal();
+    });
+    document.getElementById("schKind").addEventListener("change", onKindChange);
+    document.getElementById("schAddBtn").addEventListener("click", addSchedule);
+    document.getElementById("schList").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-sch]");
+        if (btn) deleteSchedule(btn.getAttribute("data-sch"));
+    });
+    onKindChange();
 
     loadDevices();
     setInterval(loadDevices, 5000);

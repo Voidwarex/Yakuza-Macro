@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
-<body>
+<body data-can-schedule="{{ 'true' if can_schedule else 'false' }}">
     <div class="topbar">
         <div class="logo">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -114,6 +114,55 @@
             </div>
             <div class="actions">
                 <button class="btn-ghost" id="closeUpgradeBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Schedule modal -->
+    <div class="modal-backdrop" id="scheduleModal">
+        <div class="modal modal-wide">
+            <h2>Schedule — <span id="schDeviceName"></span></h2>
+
+            <div id="schLocked" style="display:none">
+                <p class="warn">Scheduled power actions are a Pro feature. Upgrade to
+                    automatically shut down, restart or lock on a timer.</p>
+                <div class="actions">
+                    <button class="btn-green" id="schUpgradeBtn">Upgrade</button>
+                    <button class="btn-ghost" id="schCloseLocked">Close</button>
+                </div>
+            </div>
+
+            <div id="schBody">
+                <div id="schList" class="sch-list"></div>
+
+                <div class="sch-form">
+                    <select id="schAction" aria-label="Action">
+                        <option value="shutdown">Shut down</option>
+                        <option value="restart">Restart</option>
+                        <option value="lock">Lock</option>
+                    </select>
+                    <select id="schKind" aria-label="Repeat">
+                        <option value="once">Once</option>
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                    </select>
+                    <select id="schWeekday" aria-label="Day" style="display:none">
+                        <option value="0">Monday</option>
+                        <option value="1">Tuesday</option>
+                        <option value="2">Wednesday</option>
+                        <option value="3">Thursday</option>
+                        <option value="4">Friday</option>
+                        <option value="5">Saturday</option>
+                        <option value="6">Sunday</option>
+                    </select>
+                    <input type="time" id="schTime" style="display:none" />
+                    <input type="datetime-local" id="schDateTime" />
+                    <button class="btn-green" id="schAddBtn">Add</button>
+                </div>
+
+                <div class="actions">
+                    <button class="btn-ghost" id="schClose">Close</button>
+                </div>
             </div>
         </div>
     </div>

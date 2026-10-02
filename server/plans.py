@@ -54,6 +54,11 @@ def is_valid_plan(plan):
     return plan in PLANS
 
 
+def can_schedule(plan):
+    """Scheduled power actions are a paid-tier feature."""
+    return plan in PAID_PLANS
+
+
 def stripe_price_id(plan):
     """The configured Stripe Price ID for a paid plan, or None."""
     env = PLANS.get(plan, {}).get("stripe_env")

@@ -30,12 +30,15 @@ Admin CLI:
   python app.py listusers
 """
 
+import calendar
 import hmac
 import os
 import re
 import secrets
 import sys
+import threading
 import time
+from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import (
@@ -271,6 +274,7 @@ def dashboard():
         csrf=csrf_token(),
         email=user["email"],
         billing_enabled=BILLING_ENABLED,
+        can_schedule=plans.can_schedule(ctx["plan"]),
         plans=plans.PLANS,
         **ctx,
     )
@@ -344,6 +348,139 @@ def panel_command(device_id):
         return jsonify({"error": "No such device"}), 404
     db.queue_command(device_id, action)
     return jsonify({"ok": True, "action": action})
+
+
+# =========================================================
+# SCHEDULES (paid feature)
+# =========================================================
+
+SCHEDULE_ACTIONS = ("shutdown", "restart", "lock")
+MAX_SCHEDULES_PER_DEVICE = 20
+
+
+def _compute_next_run(kind, at_minute, weekday, tz_offset, after_ts=None):
+    """Next epoch (UTC) a recurring schedule fires, strictly after `after_ts`.
+    at_minute is minutes since local midnight; tz_offset is minutes local is
+    ahead of UTC. DST-naive, which is fine for a daily/weekly timer."""
+    now = after_ts if after_ts is not None else time.time()
+    local_now = datetime.utcfromtimestamp(now + tz_offset * 60)
+    target = local_now.replace(
+        hour=at_minute // 60, minute=at_minute % 60, second=0, microsecond=0
+    )
+    if kind == "daily":
+        if target <= local_now:
+            target += timedelta(days=1)
+    elif kind == "weekly":
+        days_ahead = (weekday - target.weekday()) % 7
+        target += timedelta(days=days_ahead)
+        if target <= local_now:
+            target += timedelta(days=7)
+    else:
+        return None
+    return calendar.timegm(target.timetuple()) - tz_offset * 60
+
+
+def _scheduler_tick(now=None):
+    """One pass: fire every due schedule, advance recurring ones. Returns count."""
+    now = now if now is not None else time.time()
+    fired = 0
+    for s in db.due_schedules(now):
+        db.queue_command(s["device_id"], s["action"])
+        fired += 1
+        if s["kind"] == "once":
+            db.mark_schedule_fired(s["id"], now, None, enabled=False)
+        else:
+            nxt = _compute_next_run(
+                s["kind"], s["at_minute"], s["weekday"], s["tz_offset"], after_ts=now
+            )
+            db.mark_schedule_fired(s["id"], now, nxt, enabled=True)
+    return fired
+
+
+def _scheduler_loop():
+    """Background worker: fire due schedules, advance recurring ones."""
+    while True:
+        try:
+            _scheduler_tick()
+        except Exception as exc:  # pragma: no cover
+            print("scheduler error:", exc)
+        time.sleep(20)
+
+
+@app.route("/panel/devices/<int:device_id>/schedules", methods=["GET"])
+@login_required
+def panel_list_schedules(device_id):
+    user = current_user()
+    if not db.get_device(device_id, user["id"]):
+        return jsonify({"error": "No such device"}), 404
+    return jsonify({
+        "can_schedule": plans.can_schedule(user["plan"]),
+        "schedules": db.list_schedules_for_device(device_id),
+    })
+
+
+@app.route("/panel/devices/<int:device_id>/schedules", methods=["POST"])
+@login_required
+def panel_add_schedule(device_id):
+    user = current_user()
+    if not db.get_device(device_id, user["id"]):
+        return jsonify({"error": "No such device"}), 404
+    if not plans.can_schedule(user["plan"]):
+        return jsonify({"error": "upgrade",
+                        "message": "Scheduling is a Pro feature. Upgrade to use it."}), 402
+    if db.schedule_count(device_id) >= MAX_SCHEDULES_PER_DEVICE:
+        return jsonify({"error": f"Limit of {MAX_SCHEDULES_PER_DEVICE} schedules."}), 400
+
+    body = request.json or {}
+    action = body.get("action")
+    kind = body.get("kind")
+    if action not in SCHEDULE_ACTIONS:
+        return jsonify({"error": "Invalid action"}), 400
+    if kind not in ("once", "daily", "weekly"):
+        return jsonify({"error": "Invalid repeat"}), 400
+    try:
+        tz_offset = int(body.get("tz_offset", 0))
+    except (TypeError, ValueError):
+        tz_offset = 0
+    tz_offset = max(-840, min(840, tz_offset))
+
+    at_minute = weekday = None
+    if kind == "once":
+        try:
+            run_at = float(body.get("run_at"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid time"}), 400
+        if run_at <= time.time():
+            return jsonify({"error": "That time is in the past."}), 400
+        next_run_at = run_at
+    else:
+        try:
+            at_minute = int(body.get("at_minute"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid time"}), 400
+        if not 0 <= at_minute <= 1439:
+            return jsonify({"error": "Invalid time"}), 400
+        if kind == "weekly":
+            try:
+                weekday = int(body.get("weekday"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "Invalid day"}), 400
+            if not 0 <= weekday <= 6:
+                return jsonify({"error": "Invalid day"}), 400
+        next_run_at = _compute_next_run(kind, at_minute, weekday, tz_offset)
+
+    sid = db.create_schedule(device_id, action, kind, at_minute, weekday,
+                             tz_offset, next_run_at)
+    return jsonify({"ok": True, "id": sid})
+
+
+@app.route("/panel/schedules/<int:schedule_id>", methods=["DELETE"])
+@login_required
+def panel_delete_schedule(schedule_id):
+    user = current_user()
+    device_ids = [d["id"] for d in db.list_devices(user["id"])]
+    db.delete_schedule(schedule_id, device_ids)
+    return jsonify({"ok": True})
 
 
 # =========================================================
@@ -518,6 +655,8 @@ db.init_db()
 def serve():
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
+    # Start the schedule worker (daemon so it dies with the process).
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
     print(f"Remote Power relay starting on http://{host}:{port} "
           f"(billing: {'on' if BILLING_ENABLED else 'off'})")
     try:

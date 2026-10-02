@@ -29,6 +29,14 @@ prices and device limits in one place: `server/plans.py`. The relay runs fine
 with Stripe unconfigured — the upgrade screen just says billing isn't set up,
 and you can set plans manually with the admin CLI.
 
+### Scheduled actions (Pro & Business)
+
+Paid accounts can schedule power actions per device — **once** at a date/time,
+**daily** at a time, or **weekly** on a chosen day — via the **Schedule** button
+on each device card. A background worker in the relay queues the command when a
+schedule is due, so the listener runs it on its next poll. Great for "shut down
+every night at 11pm" power savings. Free accounts see an upgrade prompt.
+
 ## Parts
 
 | Folder | What it is | Where it runs |
