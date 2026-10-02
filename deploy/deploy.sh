@@ -30,7 +30,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> Publishing website to $WEB_ROOT"
 install -d "$WEB_ROOT"
-cp "$REPO_DIR/website/index.html" "$WEB_ROOT/index.html"
+cp "$REPO_DIR"/website/*.html "$WEB_ROOT"/
 
 echo "==> Installing relay into $APP_DIR"
 install -d "$APP_DIR"
