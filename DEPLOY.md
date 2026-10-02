@@ -58,6 +58,17 @@ sudo bash deploy/deploy.sh
 Paths (`WEB_ROOT`, `APP_DIR`, `RUN_USER`, …) are variables at the top of
 `deploy/deploy.sh` — edit them if your server uses different locations.
 
+## Marketing site extras
+
+- **Share previews:** every page has Open Graph/Twitter tags pointing at
+  `og.png`, so links show a branded card on social/chat. `deploy.sh` publishes
+  `og.png` alongside the HTML. To regenerate the image, edit the card and
+  re-screenshot at 1200×630.
+- **Analytics:** you're on Cloudflare, so the simplest option is to enable
+  **Web Analytics** in the Cloudflare dashboard (Analytics → Web Analytics) —
+  one click, privacy-friendly, no code. Each page also has a commented-out
+  Cloudflare beacon snippet if you'd rather paste a token instead.
+
 ## Notes
 
 - **Retiring the macro:** your old license server already uses

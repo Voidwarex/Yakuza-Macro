@@ -3,6 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232f6bff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18.36 6.64a9 9 0 1 1-12.73 0'/%3E%3Cline x1='12' y1='2' x2='12' y2='12'/%3E%3C/svg%3E">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Amos Solutions">
+    <meta property="og:title" content="Remote Power — Turn off your PC from anywhere">
+    <meta property="og:description" content="Shut down, restart or lock your computer from anywhere, right in your browser. Free plan, works behind any home router, encrypted.">
+    <meta property="og:url" content="https://amos.fyi/">
+    <meta property="og:image" content="https://amos.fyi/og.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Remote Power — Turn off your PC from anywhere">
+    <meta name="twitter:description" content="Shut down, restart or lock your computer from anywhere, right in your browser. Free plan, works behind any home router, encrypted.">
+    <meta name="twitter:image" content="https://amos.fyi/og.png">
 <title>Amos Solutions — Remote Power</title>
 <meta name="description" content="Remote Power by Amos Solutions: shut down, restart or lock your computer from anywhere, right from your browser. Simple, secure, cross-platform.">
 
@@ -216,6 +229,19 @@
         font-weight: 700; font-size: 0.95rem; margin-bottom: 18px;
     }
 
+    /* ---------- Use cases ---------- */
+
+    .uc-grid { display: grid; gap: 18px; grid-template-columns: repeat(4, 1fr); }
+    .uc {
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow);
+    }
+    .uc .emoji { font-size: 1.7rem; line-height: 1; margin-bottom: 14px; }
+    .uc h3 { font-size: 1.08rem; font-weight: 700; margin-bottom: 6px; }
+    .uc p { color: var(--muted); margin: 0; font-size: 0.93rem; }
+    @media (max-width: 900px) { .uc-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 520px) { .uc-grid { grid-template-columns: 1fr; } }
+
     /* ---------- Pricing ---------- */
 
     .price-grid { display: grid; gap: 22px; grid-template-columns: repeat(3, 1fr); align-items: stretch; }
@@ -423,6 +449,42 @@
         </div>
     </section>
 
+    <section class="block" id="use-cases">
+        <div class="wrap">
+            <div class="section-head">
+                <div class="kicker">Who it's for</div>
+                <h2>However you use your computer</h2>
+                <p>One simple idea, useful in a lot of everyday situations.</p>
+            </div>
+            <div class="uc-grid">
+                <div class="uc">
+                    <div class="emoji">🎮</div>
+                    <h3>Gamers</h3>
+                    <p>Started a big download, update or render? Head out and power the
+                       rig down from your phone once it's finished.</p>
+                </div>
+                <div class="uc">
+                    <div class="emoji">👨‍👩‍👧</div>
+                    <h3>Parents</h3>
+                    <p>Lock or shut down the kids' PC at bedtime — set it once on a
+                       schedule and never argue about "five more minutes" again.</p>
+                </div>
+                <div class="uc">
+                    <div class="emoji">💼</div>
+                    <h3>Remote workers</h3>
+                    <p>Left the office machine on? Lock it or shut it down from home,
+                       and keep your work computer tidy and secure.</p>
+                </div>
+                <div class="uc">
+                    <div class="emoji">🖥️</div>
+                    <h3>Home labs &amp; IT</h3>
+                    <p>Manage a handful of machines and servers from one dashboard —
+                       restart a box or power one down without reaching for a KVM.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <section class="block alt" id="pricing">
         <div class="wrap">
             <div class="section-head">
@@ -497,5 +559,12 @@
     </div>
 </footer>
 
+    <!-- Privacy-friendly analytics via Cloudflare Web Analytics.
+         You're already on Cloudflare: either enable it in the dashboard
+         (Analytics -> Web Analytics) with one click, or paste your token below
+         and uncomment this snippet.
+    <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+            data-cf-beacon='{"token": "YOUR_CLOUDFLARE_TOKEN"}'></script>
+    -->
 </body>
 </html>
