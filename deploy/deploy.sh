@@ -36,19 +36,24 @@ echo "==> Installing relay into $APP_DIR"
 install -d "$APP_DIR"
 cp -r "$REPO_DIR/server/." "$APP_DIR/"
 
-echo "==> Python dependencies"
-python3 -m pip install --quiet -r "$APP_DIR/requirements.txt"
+echo "==> Python dependencies (in a virtualenv, so system Python is untouched)"
+if [ ! -d "$APP_DIR/venv" ]; then
+    python3 -m venv "$APP_DIR/venv"
+fi
+"$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
+"$APP_DIR/venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "!! $ENV_FILE not found. Create it before starting the service:"
     echo "   cp $REPO_DIR/server/config.example.env $ENV_FILE  &&  edit it"
-    echo "   (set a strong ADMIN_PASSWORD and a random SECRET_KEY)"
+    echo "   (set a random SECRET_KEY; STRIPE_* optional)"
 fi
 
 echo "==> Installing systemd unit"
 sed -e "s#/opt/remote-power/server#$APP_DIR#g" \
     -e "s#/etc/remote-power.env#$ENV_FILE#g" \
     -e "s#^User=.*#User=$RUN_USER#g" \
+    -e "s#^ExecStart=.*#ExecStart=$APP_DIR/venv/bin/python app.py serve#g" \
     "$REPO_DIR/deploy/remote-power.service" > "/etc/systemd/system/$SERVICE.service"
 
 # Let the relay write its database directory.

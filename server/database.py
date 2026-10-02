@@ -16,7 +16,9 @@ import time
 
 import plans
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "power.db"))
+# Use the default when DB_PATH is unset OR set-but-empty (e.g. a blank line in
+# the env file), so a stray "DB_PATH=" never becomes an invalid path.
+DB_PATH = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(__file__), "power.db")
 
 # Actions the panel is allowed to queue.
 VALID_ACTIONS = ("shutdown", "restart", "lock", "cancel")

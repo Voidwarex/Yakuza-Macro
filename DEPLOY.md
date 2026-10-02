@@ -34,7 +34,7 @@ sudo cp deploy/nginx-api.conf /etc/nginx/conf.d/remote-power-api.conf
 sudo bash deploy/deploy.sh
 
 # 5. Make yourself an admin account (optional, Business plan + admin CLI)
-cd /opt/remote-power && sudo -E python3 app.py createadmin you@example.com
+cd /opt/remote-power && sudo -u www-data venv/bin/python app.py createadmin you@example.com
 ```
 
 Then open **https://amos.fyi** (new landing page) and **https://api.amos.fyi**
@@ -50,8 +50,10 @@ sudo bash deploy/deploy.sh
 
 ## What the script does
 
-- Copies `website/index.html` to `/var/www/amos/index.html` (the amos.fyi page).
-- Installs `server/` to `/opt/remote-power`, installs Python deps.
+- Copies the whole `website/` folder (pages + `og.png`) to `/var/www/amos`.
+- Installs `server/` to `/opt/remote-power` and its Python deps into a
+  **virtualenv** at `/opt/remote-power/venv` (so system Python is untouched —
+  avoids the "externally-managed-environment" pip error on Debian/Ubuntu).
 - Installs/starts the `remote-power` systemd service (the relay on 127.0.0.1:8000).
 - Reloads nginx.
 
