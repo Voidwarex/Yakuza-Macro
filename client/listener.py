@@ -108,6 +108,7 @@ def load_config():
         "poll_interval": section.getint("poll_interval", 5),
         "dry_run": section.getboolean("dry_run", False),
         "kind": section.get("kind", "auto").strip().lower(),
+        "allow_screenshots": section.getboolean("allow_screenshots", False),
     }
     if not cfg["api_key"]:
         fatal("No api_key set in config.ini. Add the key from the web panel.")
@@ -211,6 +212,61 @@ def os_info():
     return f"{platform.system()} {platform.release()}".strip()
 
 
+# --------------------------------------------------------------------------
+# Optional screen preview (opt-in via allow_screenshots). Needs 'mss' and
+# 'Pillow'; if either is missing we just skip previews (power control is
+# unaffected).  Install with:  pip install mss pillow
+# --------------------------------------------------------------------------
+
+_screenshot_warned = False
+
+
+def capture_screenshot(max_width=900, quality=50):
+    """Return a downscaled JPEG of the primary screen, or None if unavailable."""
+    global _screenshot_warned
+    try:
+        import io
+        import mss
+        from PIL import Image
+    except ImportError:
+        if not _screenshot_warned:
+            log.info("Screen preview is on, but 'mss'/'Pillow' aren't installed. "
+                     "Run: pip install mss pillow")
+            _screenshot_warned = True
+        return None
+    try:
+        with mss.mss() as sct:
+            raw = sct.grab(sct.monitors[1])  # primary monitor
+        img = Image.frombytes("RGB", raw.size, raw.rgb)
+        if img.width > max_width:
+            h = int(img.height * max_width / img.width)
+            img = img.resize((max_width, h))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+    except Exception as exc:  # no display, locked session, etc.
+        log.warning("Could not capture screen: %s", exc)
+        return None
+
+
+def send_screenshot(server_url, headers, cfg):
+    if not cfg.get("allow_screenshots"):
+        return  # feature off for this device; nothing uploaded
+    data = capture_screenshot()
+    if not data:
+        return
+    try:
+        requests.post(
+            f"{server_url}/api/screenshot",
+            data=data,
+            headers={**headers, "Content-Type": "image/jpeg"},
+            timeout=20,
+        )
+        log.info("Uploaded screen preview (%d KB)", len(data) // 1024)
+    except requests.RequestException as exc:
+        log.warning("Screen preview upload failed: %s", exc)
+
+
 def run_action(action, dry_run):
     """Carry out a power command on this machine."""
     system = platform.system()
@@ -273,6 +329,8 @@ def main():
     log.info("Relay: %s  (polling every %ss)", cfg["server_url"], cfg["poll_interval"])
     if cfg["dry_run"]:
         log.info("DRY RUN: commands will be logged but not executed.")
+    if cfg["allow_screenshots"]:
+        log.info("Screen previews: enabled (panel can request thumbnails).")
     log.info("Running.")
 
     backoff = cfg["poll_interval"]
@@ -306,7 +364,10 @@ def main():
                         )
                     except requests.RequestException:
                         pass
-                run_action(action, cfg["dry_run"])
+                if action == "screenshot":
+                    send_screenshot(cfg["server_url"], headers, cfg)
+                else:
+                    run_action(action, cfg["dry_run"])
 
         except requests.RequestException as exc:
             # Network hiccup — back off a little, then keep trying.

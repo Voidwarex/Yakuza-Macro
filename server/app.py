@@ -48,6 +48,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     session,
     url_for,
 )
@@ -70,8 +71,18 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=_secure_cookies,
     PERMANENT_SESSION_LIFETIME=7 * 24 * 60 * 60,
-    MAX_CONTENT_LENGTH=64 * 1024,
+    MAX_CONTENT_LENGTH=4 * 1024 * 1024,  # room for screen-preview JPEGs
 )
+
+# Where opt-in screen previews are stored (one JPEG per device).
+SCREENSHOT_DIR = os.environ.get(
+    "SCREENSHOT_DIR", os.path.join(os.path.dirname(__file__), "screenshots")
+)
+os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+
+
+def _shot_path(device_id):
+    return os.path.join(SCREENSHOT_DIR, f"{int(device_id)}.jpg")
 
 OFFLINE_AFTER = 60  # seconds before a device shows as offline
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -300,6 +311,8 @@ def panel_devices():
                 "last_ip": d["last_ip"],
                 "os_info": d["os_info"],
                 "pending": db.pending_count(d["id"]),
+                "shot_at": d["shot_at"],
+                "has_preview": os.path.exists(_shot_path(d["id"])),
             }
         )
     return jsonify({"devices": out, "plan": ctx})
@@ -333,7 +346,12 @@ def panel_add_device():
 @login_required
 def panel_delete_device(device_id):
     user = current_user()
-    db.delete_device(device_id, user["id"])
+    if db.get_device(device_id, user["id"]):
+        db.delete_device(device_id, user["id"])
+        try:
+            os.remove(_shot_path(device_id))
+        except OSError:
+            pass
     return jsonify({"ok": True})
 
 
@@ -348,6 +366,54 @@ def panel_command(device_id):
         return jsonify({"error": "No such device"}), 404
     db.queue_command(device_id, action)
     return jsonify({"ok": True, "action": action})
+
+
+# =========================================================
+# SCREEN PREVIEWS (opt-in, owner-triggered)
+# =========================================================
+
+@app.route("/panel/devices/<int:device_id>/screenshot", methods=["POST"])
+@login_required
+def panel_request_screenshot(device_id):
+    """Owner asks this device to capture its screen on its next poll."""
+    user = current_user()
+    if not db.get_device(device_id, user["id"]):
+        return jsonify({"error": "No such device"}), 404
+    db.queue_screenshot(device_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/panel/devices/<int:device_id>/screenshot", methods=["GET"])
+@login_required
+def panel_get_screenshot(device_id):
+    """Serve the latest stored preview for a device the user owns."""
+    user = current_user()
+    if not db.get_device(device_id, user["id"]):
+        abort(404)
+    path = _shot_path(device_id)
+    if not os.path.exists(path):
+        abort(404)
+    resp = send_file(path, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/screenshot", methods=["POST"])
+def api_screenshot():
+    """The listener uploads a captured JPEG here (authenticated by device key)."""
+    device_id = client_from_request()
+    if device_id is None:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_data()
+    if not data or len(data) > 4 * 1024 * 1024:
+        return jsonify({"error": "bad image"}), 400
+    try:
+        with open(_shot_path(device_id), "wb") as f:
+            f.write(data)
+    except OSError:
+        return jsonify({"error": "store failed"}), 500
+    db.set_screenshot_time(device_id, time.time())
+    return jsonify({"ok": True})
 
 
 # =========================================================

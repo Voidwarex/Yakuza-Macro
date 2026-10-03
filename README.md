@@ -154,6 +154,21 @@ From the panel you'll see each device with its online status and buttons:
 
 Commands are delivered on the listener's next poll (every 5s by default).
 
+## Screen previews (optional, off by default)
+
+Each expanded device card can show a **thumbnail of that PC's screen**, captured
+only when you open the panel. It's **opt-in per device** for privacy:
+
+1. On that PC, install the extras: `pip install mss pillow`.
+2. In its `config.ini`, set `allow_screenshots = true` and restart the listener.
+
+When the owner opens the panel, online devices are asked to capture one still
+image, which is downscaled to a JPEG and shown in the card (and stored as the
+latest preview on the server, one per device). Devices with the option off just
+show a placeholder — power control is unaffected either way. Previews are
+owner-only (served through an authenticated route) and are never continuous
+recording.
+
 ## Billing (Stripe subscriptions)
 
 Paid plans use [Stripe Checkout](https://stripe.com) + subscriptions. Without

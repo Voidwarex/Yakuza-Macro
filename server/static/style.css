@@ -341,3 +341,18 @@ select:focus, input[type="time"]:focus, input[type="datetime-local"]:focus {
     padding: 16px; background: var(--bg-soft);
     border: 1px solid var(--border); border-radius: 12px; margin-bottom: 18px;
 }
+
+/* ---- screen preview thumbnail ---- */
+
+.preview { margin-bottom: 16px; }
+.preview-img {
+    width: 100%; display: block; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg-soft);
+    aspect-ratio: 16 / 10; object-fit: cover;
+}
+.preview-cap { margin-top: 6px; font-size: 0.78rem; color: var(--muted); }
+.preview-none {
+    font-size: 0.86rem; color: var(--muted);
+    background: var(--bg-soft); border: 1px dashed var(--border-strong);
+    border-radius: 10px; padding: 18px; text-align: center;
+}

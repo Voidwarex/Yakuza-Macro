@@ -60,6 +60,12 @@ function updateMeter() {
 
 let planState = { used: 0, limit: 3, at_limit: false };
 const expanded = new Set(); // device ids whose card is open (survives refresh)
+let previewsRequested = false; // request screen previews once per panel entry
+
+function requestPreview(id) {
+    // Ask a device to capture its screen (no-op server-side if it's off there).
+    api(`/panel/devices/${id}/screenshot`, { method: "POST" }).catch(() => {});
+}
 
 async function loadDevices() {
     let res;
@@ -75,6 +81,13 @@ async function loadDevices() {
     const data = await res.json();
     const devices = data.devices || [];
     planState = data.plan || planState;
+
+    // On first load (entering the panel), request a fresh screen preview from
+    // each online device. They upload one on their next poll if enabled.
+    if (!previewsRequested) {
+        previewsRequested = true;
+        devices.filter((d) => d.online).forEach((d) => requestPreview(d.id));
+    }
 
     const usage = document.getElementById("usageText");
     if (usage) usage.textContent = `${planState.used} / ${planState.limit} devices`;
@@ -121,6 +134,15 @@ async function loadDevices() {
                     </div>
                 </div>
                 <div class="card-body">
+                    <div class="preview">
+                        ${d.has_preview
+                            ? `<img class="preview-img" alt="Screen preview of ${esc(d.name)}"
+                                 src="/panel/devices/${d.id}/screenshot?ts=${d.shot_at || 0}">
+                               <div class="preview-cap">Screen · ${timeAgo(d.shot_at)}</div>`
+                            : `<div class="preview-none">${d.online
+                                ? "No screen preview. Enable it in the listener (allow_screenshots = true)."
+                                : "Device offline — no preview."}</div>`}
+                    </div>
                     <div class="meta">
                         <div>Last seen: <b>${timeAgo(d.last_seen)}</b></div>
                         <div>IP: <b>${esc(d.last_ip) || "—"}</b></div>
@@ -149,6 +171,8 @@ function toggleCard(id) {
     card.classList.toggle("open", !isOpen);
     const head = card.querySelector("[data-toggle]");
     if (head) head.setAttribute("aria-expanded", String(!isOpen));
+    // Opening an online card refreshes its screen preview.
+    if (!isOpen && card.classList.contains("is-online")) requestPreview(id);
 }
 
 async function cmd(id, action) {
@@ -233,7 +257,8 @@ function downloadConfig() {
         "device = " + newName + "\n" +
         "kind = auto\n" +
         "poll_interval = 5\n" +
-        "dry_run = false\n";
+        "dry_run = false\n" +
+        "allow_screenshots = false\n";
     const blob = new Blob([body], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);

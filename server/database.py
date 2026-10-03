@@ -65,12 +65,14 @@ def init_db():
             )
             """
         )
-        # Migration: add 'kind' to databases created before it existed.
+        # Migrations: add columns to databases created before they existed.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(devices)")}
         if "kind" not in cols:
             conn.execute(
                 "ALTER TABLE devices ADD COLUMN kind TEXT NOT NULL DEFAULT 'desktop'"
             )
+        if "shot_at" not in cols:
+            conn.execute("ALTER TABLE devices ADD COLUMN shot_at REAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS schedules (
@@ -278,10 +280,34 @@ def pending_count(device_id):
     with get_conn() as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS n FROM commands "
-            "WHERE device_id = ? AND status = 'pending'",
+            "WHERE device_id = ? AND status = 'pending' AND action != 'screenshot'",
             (device_id,),
         ).fetchone()
         return row["n"]
+
+
+# --------------------------------------------------------------------------
+# Screenshots (opt-in screen previews)
+# --------------------------------------------------------------------------
+
+def queue_screenshot(device_id):
+    """Queue a one-off screen capture, replacing any pending one."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE commands SET status = 'superseded' "
+            "WHERE device_id = ? AND status = 'pending' AND action = 'screenshot'",
+            (device_id,),
+        )
+        conn.execute(
+            "INSERT INTO commands (device_id, action, created_at) "
+            "VALUES (?, 'screenshot', ?)",
+            (device_id, time.time()),
+        )
+
+
+def set_screenshot_time(device_id, ts):
+    with get_conn() as conn:
+        conn.execute("UPDATE devices SET shot_at = ? WHERE id = ?", (ts, device_id))
 
 
 # --------------------------------------------------------------------------

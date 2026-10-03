@@ -3,6 +3,7 @@
 .env
 client/config.ini
 *.log
+server/screenshots/
 
 # Python
 __pycache__/
