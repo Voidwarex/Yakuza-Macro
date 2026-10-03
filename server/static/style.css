@@ -139,13 +139,25 @@ button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ---- device grid ---- */
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; align-items: start; }
 
 .card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow);
 }
-.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; cursor: pointer; user-select: none;
+}
+.card-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 10px; }
+.head-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.chevron { color: var(--muted); transition: transform 0.2s ease; }
+.card.open .chevron { transform: rotate(180deg); }
+
+/* Collapsed by default; the body (details + actions) shows when open. */
+.card-body { display: none; margin-top: 16px; }
+.card.open .card-body { display: block; animation: cardReveal 0.18s ease; }
+@keyframes cardReveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .device-name { font-weight: 700; font-size: 1.1rem; display: flex; align-items: center; gap: 10px; }
 
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-strong); flex-shrink: 0; }

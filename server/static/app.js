@@ -59,6 +59,7 @@ function updateMeter() {
 }
 
 let planState = { used: 0, limit: 3, at_limit: false };
+const expanded = new Set(); // device ids whose card is open (survives refresh)
 
 async function loadDevices() {
     let res;
@@ -98,9 +99,11 @@ async function loadDevices() {
                 ? `<button class="btn-ghost btn-sm" data-act="cancel" data-id="${d.id}">Cancel</button>`
                 : "";
             const kind = d.kind || "desktop";
+            const open = expanded.has(String(d.id)) ? "open" : "";
             return `
-            <div class="card ${d.online ? "is-online" : ""}">
-                <div class="card-head">
+            <div class="card ${d.online ? "is-online" : ""} ${open}" data-card="${d.id}">
+                <div class="card-head" data-toggle="${d.id}" role="button" tabindex="0"
+                     aria-expanded="${open ? "true" : "false"}">
                     <div class="device-ident">
                         <span class="dev-icon ${d.online ? "on" : ""}">${iconFor(kind)}</span>
                         <div class="ident-text">
@@ -110,24 +113,42 @@ async function loadDevices() {
                             </span>
                         </div>
                     </div>
-                    ${pending}
+                    <div class="head-right">
+                        ${pending}
+                        <svg class="chevron" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+                             stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
                 </div>
-                <div class="meta">
-                    <div>Last seen: <b>${timeAgo(d.last_seen)}</b></div>
-                    <div>IP: <b>${esc(d.last_ip) || "—"}</b></div>
-                    <div>System: <b>${esc(d.os_info) || "—"}</b></div>
-                </div>
-                <div class="actions">
-                    <button class="btn-red btn-sm" data-act="shutdown" data-id="${d.id}">Shut down</button>
-                    <button class="btn-amber btn-sm" data-act="restart" data-id="${d.id}">Restart</button>
-                    <button class="btn-sm" data-act="lock" data-id="${d.id}">Lock</button>
-                    ${cancelBtn}
-                    <button class="btn-ghost btn-sm" data-act="schedule" data-id="${d.id}" data-name="${esc(d.name)}">Schedule</button>
-                    <button class="btn-ghost btn-sm" data-act="remove" data-id="${d.id}" data-name="${esc(d.name)}">Remove</button>
+                <div class="card-body">
+                    <div class="meta">
+                        <div>Last seen: <b>${timeAgo(d.last_seen)}</b></div>
+                        <div>IP: <b>${esc(d.last_ip) || "—"}</b></div>
+                        <div>System: <b>${esc(d.os_info) || "—"}</b></div>
+                    </div>
+                    <div class="actions">
+                        <button class="btn-red btn-sm" data-act="shutdown" data-id="${d.id}">Shut down</button>
+                        <button class="btn-amber btn-sm" data-act="restart" data-id="${d.id}">Restart</button>
+                        <button class="btn-sm" data-act="lock" data-id="${d.id}">Lock</button>
+                        ${cancelBtn}
+                        <button class="btn-ghost btn-sm" data-act="schedule" data-id="${d.id}" data-name="${esc(d.name)}">Schedule</button>
+                        <button class="btn-ghost btn-sm" data-act="remove" data-id="${d.id}" data-name="${esc(d.name)}">Remove</button>
+                    </div>
                 </div>
             </div>`;
         })
         .join("");
+}
+
+function toggleCard(id) {
+    id = String(id);
+    const card = document.querySelector(`.card[data-card="${id}"]`);
+    if (!card) return;
+    const isOpen = expanded.has(id);
+    if (isOpen) { expanded.delete(id); } else { expanded.add(id); }
+    card.classList.toggle("open", !isOpen);
+    const head = card.querySelector("[data-toggle]");
+    if (head) head.setAttribute("aria-expanded", String(!isOpen));
 }
 
 async function cmd(id, action) {
@@ -396,14 +417,24 @@ document.addEventListener("DOMContentLoaded", () => {
         if (e.key === "Enter") createDevice();
     });
 
-    document.getElementById("grid").addEventListener("click", (e) => {
+    const grid = document.getElementById("grid");
+    grid.addEventListener("click", (e) => {
         const btn = e.target.closest("button[data-act]");
-        if (!btn) return;
-        const id = btn.getAttribute("data-id");
-        const act = btn.getAttribute("data-act");
-        if (act === "remove") removeDevice(id, btn.getAttribute("data-name"));
-        else if (act === "schedule") openScheduleModal(id, btn.getAttribute("data-name"));
-        else cmd(id, act);
+        if (btn) {
+            const id = btn.getAttribute("data-id");
+            const act = btn.getAttribute("data-act");
+            if (act === "remove") removeDevice(id, btn.getAttribute("data-name"));
+            else if (act === "schedule") openScheduleModal(id, btn.getAttribute("data-name"));
+            else cmd(id, act);
+            return;
+        }
+        const head = e.target.closest("[data-toggle]");
+        if (head) toggleCard(head.getAttribute("data-toggle"));
+    });
+    grid.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const head = e.target.closest("[data-toggle]");
+        if (head) { e.preventDefault(); toggleCard(head.getAttribute("data-toggle")); }
     });
 
     // schedule modal
