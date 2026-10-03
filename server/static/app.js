@@ -148,12 +148,23 @@ async function loadDevices() {
                         <div>IP: <b>${esc(d.last_ip) || "—"}</b></div>
                         <div>System: <b>${esc(d.os_info) || "—"}</b></div>
                     </div>
+
+                    <div class="section-label">Power</div>
                     <div class="actions">
                         <button class="btn-red btn-sm" data-act="shutdown" data-id="${d.id}">Shut down</button>
                         <button class="btn-amber btn-sm" data-act="restart" data-id="${d.id}">Restart</button>
                         <button class="btn-sm" data-act="lock" data-id="${d.id}">Lock</button>
                         ${cancelBtn}
+                    </div>
+
+                    <div class="section-label">Pro tools <span class="pro-tag">PRO</span></div>
+                    <div class="actions">
                         <button class="btn-ghost btn-sm" data-act="schedule" data-id="${d.id}" data-name="${esc(d.name)}">Schedule</button>
+                        <button class="btn-ghost btn-sm" data-act="preview" data-id="${d.id}">Refresh preview</button>
+                    </div>
+
+                    <div class="section-label">Manage</div>
+                    <div class="actions">
                         <button class="btn-ghost btn-sm" data-act="remove" data-id="${d.id}" data-name="${esc(d.name)}">Remove</button>
                     </div>
                 </div>
@@ -450,6 +461,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const act = btn.getAttribute("data-act");
             if (act === "remove") removeDevice(id, btn.getAttribute("data-name"));
             else if (act === "schedule") openScheduleModal(id, btn.getAttribute("data-name"));
+            else if (act === "preview") { requestPreview(id); btn.textContent = "Requested…"; setTimeout(() => (btn.textContent = "Refresh preview"), 2000); }
             else cmd(id, act);
             return;
         }
