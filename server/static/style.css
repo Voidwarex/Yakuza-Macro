@@ -428,3 +428,45 @@ select:focus, input[type="time"]:focus, input[type="datetime-local"]:focus {
 @media (prefers-reduced-motion: reduce) {
     .auth-flip { transition: none; }
 }
+
+/* ---- secure sign-in overlay ---- */
+
+.auth-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+}
+.auth-overlay.show { display: flex; animation: ovFade 0.25s ease; }
+@keyframes ovFade { from { opacity: 0; } }
+
+.auth-overlay-card {
+    width: min(360px, 92vw); text-align: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px; box-shadow: var(--shadow-lg); padding: 34px 30px;
+    animation: ovPop 0.3s cubic-bezier(0.2,0.7,0.3,1) both;
+}
+@keyframes ovPop { from { opacity: 0; transform: translateY(10px) scale(0.96); } }
+
+.ov-mark {
+    width: 58px; height: 58px; border-radius: 15px; display: inline-grid; place-items: center;
+    background: var(--accent); color: #fff; margin-bottom: 16px;
+    box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 45%, transparent);
+    animation: markPulse 1.1s ease-in-out infinite;
+}
+.ov-title { font-size: 1.18rem; font-weight: 800; letter-spacing: -0.01em; }
+.ov-status { color: var(--muted); font-size: 0.92rem; margin: 8px 0 18px; min-height: 1.2em; }
+
+.ov-bar {
+    height: 8px; border-radius: 999px; overflow: hidden;
+    background: var(--bg-soft); border: 1px solid var(--border);
+}
+.ov-bar span {
+    display: block; height: 100%; width: 0; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #fff));
+    transition: width 0.55s cubic-bezier(0.3,0.7,0.3,1);
+}
+.ov-lock {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 16px; color: var(--muted); font-size: 0.78rem;
+}

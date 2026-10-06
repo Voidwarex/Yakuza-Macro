@@ -246,6 +246,10 @@ def register():
     return render_template("auth.html", active="register", error=error)
 
 
+def _wants_json():
+    return request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -263,9 +267,13 @@ def login():
                 session["uid"] = user["id"]
                 session.permanent = True
                 csrf_token()
+                if _wants_json():
+                    return jsonify({"ok": True, "next": url_for("dashboard")})
                 return redirect(url_for("dashboard"))
             _record_failure(ip)
             error = "Incorrect email or password."
+        if _wants_json():
+            return jsonify({"ok": False, "error": error})
     return render_template("auth.html", active="login", error=error)
 
 

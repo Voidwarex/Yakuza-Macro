@@ -28,6 +28,7 @@
                     <p class="subtitle">Sign in to control your devices</p>
 
                     {% if active == 'login' and error %}<div class="error">{{ error }}</div>{% endif %}
+                    <div class="error" id="loginError" style="display:none"></div>
 
                     <input type="email" name="email" placeholder="Email" autocomplete="email" required />
                     <input type="password" name="password" placeholder="Password"
@@ -66,6 +67,29 @@
                         <a href="{{ url_for('login') }}" data-flip="login">Sign in</a></p>
                 </form>
 
+            </div>
+        </div>
+    </div>
+
+    <!-- Secure sign-in overlay -->
+    <div class="auth-overlay" id="authOverlay" aria-hidden="true">
+        <div class="auth-overlay-card" role="status" aria-live="polite">
+            <span class="ov-mark">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff"
+                     stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+                    <line x1="12" y1="2" x2="12" y2="12" />
+                </svg>
+            </span>
+            <div class="ov-title">Securely signing in</div>
+            <div class="ov-status" id="ovStatus">Starting…</div>
+            <div class="ov-bar"><span id="ovBar"></span></div>
+            <div class="ov-lock">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                Encrypted connection
             </div>
         </div>
     </div>
