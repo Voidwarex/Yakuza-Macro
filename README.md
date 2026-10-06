@@ -65,7 +65,9 @@ See `server/config.example.env` for every setting.
 Make yourself an admin, then an **Admin** link appears in the panel header:
 
 ```
-python app.py createadmin you@example.com    # make yourself an admin (Business plan)
+python app.py createadmin you@example.com       # new admin account (Business plan)
+python app.py setadmin you@example.com          # promote an EXISTING account to admin
+python app.py setadmin you@example.com --off    # remove admin
 ```
 
 The admin page (`/admin`, admins only) shows platform stats (accounts,

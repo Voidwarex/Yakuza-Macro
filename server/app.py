@@ -25,7 +25,8 @@ Key environment variables (see config.example.env for the full list):
 
 Admin CLI:
   python app.py serve
-  python app.py createadmin <email>
+  python app.py createadmin <email>            # new admin account
+  python app.py setadmin <email> [--off]       # promote/demote existing account
   python app.py setplan <email> <free|pro|business>
   python app.py listusers
 """
@@ -868,6 +869,16 @@ def _cli():
                          user.get("plan_renews_at"))
         print(f"{email} is now on the {plans.PLANS[plan]['name']} plan "
               f"({plans.device_limit(plan)} devices).")
+
+    elif cmd == "setadmin" and len(args) >= 2:
+        email = args[1].strip().lower()
+        make = "--off" not in args
+        user = db.get_user_by_email(email)
+        if not user:
+            print("No such user.")
+            return
+        db.set_admin(user["id"], make)
+        print(f"{email} is {'now an admin' if make else 'no longer an admin'}.")
 
     elif cmd == "listusers":
         for u in db.list_users():

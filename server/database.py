@@ -151,6 +151,14 @@ def set_user_plan(user_id, plan, subscription_id=None, renews_at=None):
         )
 
 
+def set_admin(user_id, is_admin=True):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET is_admin = ? WHERE id = ?",
+            (1 if is_admin else 0, user_id),
+        )
+
+
 def set_stripe_customer(user_id, customer_id):
     with get_conn() as conn:
         conn.execute(
