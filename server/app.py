@@ -165,6 +165,19 @@ def login_required(view):
     return wrapped
 
 
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user:
+            return redirect(url_for("login"))
+        if not user.get("is_admin"):
+            abort(403)
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
 def csrf_token():
     token = session.get("csrf")
     if not token:
@@ -198,9 +211,9 @@ def csrf_protect():
     /api/* (Bearer auth) and /billing/webhook (Stripe signature) are exempt."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return
-    if not request.path.startswith("/panel"):
+    if not (request.path.startswith("/panel") or request.path.startswith("/admin")):
         return
-    sent = request.headers.get("X-CSRF-Token", "")
+    sent = request.headers.get("X-CSRF-Token", "") or request.form.get("csrf", "")
     expected = session.get("csrf", "")
     if not expected or not hmac.compare_digest(sent, expected):
         abort(403)
@@ -310,11 +323,75 @@ def dashboard():
         "dashboard.html",
         csrf=csrf_token(),
         email=user["email"],
+        is_admin=bool(user["is_admin"]),
         billing_enabled=BILLING_ENABLED,
         can_schedule=plans.can_schedule(ctx["plan"]),
         plans=plans.PLANS,
         **ctx,
     )
+
+
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+@app.route("/admin")
+@admin_required
+def admin():
+    from datetime import datetime
+
+    cutoff = time.time() - OFFLINE_AFTER
+    stats = db.device_stats_by_user(cutoff)
+    totals = db.platform_totals(cutoff)
+    me = current_user()
+
+    rows, plan_counts = [], {}
+    for u in db.list_users():
+        st = stats.get(u["id"], {"total": 0, "online": 0})
+        plan = u["plan"] if plans.is_valid_plan(u["plan"]) else "free"
+        plan_counts[plan] = plan_counts.get(plan, 0) + 1
+        joined = ""
+        if u["created_at"]:
+            joined = datetime.utcfromtimestamp(u["created_at"]).strftime("%Y-%m-%d")
+        rows.append({
+            "id": u["id"], "email": u["email"], "plan": plan,
+            "plan_name": plans.PLANS[plan]["name"], "limit": plans.device_limit(plan),
+            "is_admin": bool(u["is_admin"]), "joined": joined,
+            "dev_total": st["total"], "dev_online": st["online"],
+            "subscribed": bool(u.get("stripe_subscription_id")),
+            "is_self": u["id"] == me["id"],
+        })
+
+    return render_template(
+        "admin.html", csrf=csrf_token(), email=me["email"], totals=totals,
+        users=rows, plan_counts=plan_counts, plans=plans.PLANS,
+    )
+
+
+@app.route("/admin/users/<int:uid>/plan", methods=["POST"])
+@admin_required
+def admin_set_plan(uid):
+    plan = request.form.get("plan", "")
+    if plans.is_valid_plan(plan):
+        u = db.get_user(uid)
+        if u:
+            db.set_user_plan(uid, plan, u.get("stripe_subscription_id"),
+                             u.get("plan_renews_at"))
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
+@admin_required
+def admin_delete_user(uid):
+    me = current_user()
+    if uid != me["id"] and db.get_user(uid):
+        for d in db.list_devices(uid):     # clean up their stored previews
+            try:
+                os.remove(_shot_path(d["id"]))
+            except OSError:
+                pass
+        db.delete_user(uid)
+    return redirect(url_for("admin"))
 
 
 # ---- panel API (fetch from app.js) ----

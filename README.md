@@ -60,10 +60,21 @@ is `power.db` next to the script — override with `DB_PATH`. Keep it private.
 
 See `server/config.example.env` for every setting.
 
-### Admin CLI
+### Admin
+
+Make yourself an admin, then an **Admin** link appears in the panel header:
 
 ```
 python app.py createadmin you@example.com    # make yourself an admin (Business plan)
+```
+
+The admin page (`/admin`, admins only) shows platform stats (accounts,
+devices, online now, active schedules), a plan breakdown, and a table of every
+account with its plan, device count, online devices and join date — plus
+inline actions to change a user's plan or delete an account. The same actions
+are available from the CLI:
+
+```
 python app.py setplan user@example.com pro   # manually set a plan
 python app.py listusers                      # list accounts + device usage
 ```

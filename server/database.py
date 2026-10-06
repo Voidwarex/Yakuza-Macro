@@ -167,6 +167,41 @@ def list_users():
         return [dict(r) for r in rows]
 
 
+def delete_user(user_id):
+    """Delete an account; devices/commands/schedules/sessions cascade."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+# --------------------------------------------------------------------------
+# Admin stats
+# --------------------------------------------------------------------------
+
+def device_stats_by_user(online_cutoff):
+    """Map user_id -> {"total": n, "online": n} across all devices."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT user_id, COUNT(*) AS total, "
+            "SUM(CASE WHEN last_seen IS NOT NULL AND last_seen > ? THEN 1 ELSE 0 END) "
+            "AS online FROM devices GROUP BY user_id",
+            (online_cutoff,),
+        ).fetchall()
+        return {r["user_id"]: {"total": r["total"], "online": r["online"] or 0}
+                for r in rows}
+
+
+def platform_totals(online_cutoff):
+    with get_conn() as conn:
+        one = lambda q, a=(): conn.execute(q, a).fetchone()["n"]
+        return {
+            "users": one("SELECT COUNT(*) AS n FROM users"),
+            "devices": one("SELECT COUNT(*) AS n FROM devices"),
+            "online": one("SELECT COUNT(*) AS n FROM devices WHERE last_seen IS NOT NULL "
+                          "AND last_seen > ?", (online_cutoff,)),
+            "schedules": one("SELECT COUNT(*) AS n FROM schedules WHERE enabled = 1"),
+        }
+
+
 # --------------------------------------------------------------------------
 # Devices (scoped to a user)
 # --------------------------------------------------------------------------
