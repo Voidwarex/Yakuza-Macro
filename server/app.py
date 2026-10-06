@@ -225,7 +225,7 @@ def register():
             session.permanent = True
             csrf_token()
             return redirect(url_for("dashboard"))
-    return render_template("register.html", error=error)
+    return render_template("auth.html", active="register", error=error)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -248,7 +248,7 @@ def login():
                 return redirect(url_for("dashboard"))
             _record_failure(ip)
             error = "Incorrect email or password."
-    return render_template("login.html", error=error)
+    return render_template("auth.html", active="login", error=error)
 
 
 @app.route("/logout")
