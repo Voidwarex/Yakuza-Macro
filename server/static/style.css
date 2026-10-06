@@ -470,3 +470,79 @@ select:focus, input[type="time"]:focus, input[type="datetime-local"]:focus {
     display: inline-flex; align-items: center; gap: 6px;
     margin-top: 16px; color: var(--muted); font-size: 0.78rem;
 }
+
+/* ===========================================================
+   Dashboard polish — more professional / modern
+   =========================================================== */
+
+body {
+    background:
+        radial-gradient(1000px 480px at 82% -12%, var(--accent-soft), transparent 60%),
+        radial-gradient(760px 420px at -8% 8%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+        var(--bg);
+    background-attachment: fixed;
+}
+
+/* ---- top bar ---- */
+.topbar { padding: 0 32px; }
+.topbar-right { gap: 14px; }
+
+.plan-badge {
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em;
+    padding: 4px 11px; border-radius: 999px;
+    background: var(--bg-soft); color: var(--muted); border: 1px solid var(--border);
+}
+.plan-badge.plan-pro {
+    background: var(--accent-soft); color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.plan-badge.plan-business {
+    background: linear-gradient(135deg, var(--accent), #7a4dff); color: #fff; border-color: transparent;
+}
+
+.user-chip { display: flex; align-items: center; gap: 9px; }
+.avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 0.82rem;
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 50%, #7a4dff));
+    box-shadow: var(--shadow);
+}
+.topbar-right .email { font-size: 0.86rem; color: var(--muted); }
+.signout {
+    display: grid; place-items: center; width: 34px; height: 34px;
+    border-radius: 9px; color: var(--muted); border: 1px solid transparent; transition: all 0.15s;
+}
+.signout:hover { color: var(--text); background: var(--bg-soft); border-color: var(--border); }
+@media (max-width: 640px) { .topbar-right .email, .plan-badge { display: none; } }
+
+/* ---- layout ---- */
+.container { max-width: 960px; padding-top: 40px; }
+h1 { font-size: 1.55rem; }
+.row { margin-bottom: 20px; }
+
+/* ---- plan bar ---- */
+.plan-bar {
+    background: linear-gradient(180deg, var(--surface), var(--bg-soft));
+    padding: 20px 24px; gap: 18px;
+}
+.plan-icon {
+    width: 46px; height: 46px; border-radius: 12px; flex-shrink: 0;
+    display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.plan-info { flex: 1; min-width: 180px; }
+.plan-name { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
+.plan-usage { color: var(--muted); font-size: 0.86rem; margin-top: 2px; }
+.plan-bar .meter { max-width: none; margin-top: 12px; }
+
+/* ---- device cards ---- */
+.card {
+    background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--bg-soft) 50%, var(--surface)));
+    border-radius: 14px; padding: 20px 22px;
+}
+.card.is-online { border-color: color-mix(in srgb, var(--on) 24%, var(--border)); }
+.dev-icon { border-radius: 11px; }
+
+/* ---- empty state ---- */
+.empty { background: color-mix(in srgb, var(--bg-soft) 60%, transparent); }
