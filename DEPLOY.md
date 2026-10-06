@@ -48,6 +48,29 @@ git pull
 sudo bash deploy/deploy.sh
 ```
 
+## Auto-deploy (push = live, no SSH needed)
+
+Set this up **once** and every push to `main` goes live on its own within a
+couple of minutes:
+
+```bash
+cd ~/remote-power
+sudo bash deploy/install-autodeploy.sh
+```
+
+It installs a systemd timer that checks GitHub every ~2 minutes and runs the
+deploy only when there's a new commit (quiet otherwise). Handy commands:
+
+```bash
+journalctl -u amos-autodeploy -f                      # watch deploys happen
+sudo systemctl start amos-autodeploy.service          # deploy right now
+INTERVAL=1min sudo bash deploy/install-autodeploy.sh  # check more often
+sudo systemctl disable --now amos-autodeploy.timer    # turn it off
+```
+
+Note: the server tracks `origin/main` exactly (`git reset --hard`), so don't
+hand-edit files in the repo on the server — change them in Git and push.
+
 ## What the script does
 
 - Copies the whole `website/` folder (pages + `og.png`) to `/var/www/amos`.
