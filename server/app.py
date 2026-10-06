@@ -85,6 +85,24 @@ def _shot_path(device_id):
     return os.path.join(SCREENSHOT_DIR, f"{int(device_id)}.jpg")
 
 OFFLINE_AFTER = 60  # seconds before a device shows as offline
+
+
+# Cache-bust static assets by appending each file's mtime, so a new deploy
+# always serves fresh CSS/JS even through Cloudflare's cache.
+def dated_url_for(endpoint, **values):
+    if endpoint == "static":
+        filename = values.get("filename")
+        if filename:
+            try:
+                values["v"] = int(os.stat(os.path.join(app.static_folder, filename)).st_mtime)
+            except OSError:
+                pass
+    return url_for(endpoint, **values)
+
+
+@app.context_processor
+def _inject_dated_url_for():
+    return {"url_for": dated_url_for}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # ---- Stripe setup ----
