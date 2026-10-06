@@ -45,6 +45,7 @@ from functools import wraps
 from flask import (
     Flask,
     abort,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -187,8 +188,20 @@ def csrf_token():
     return token
 
 
+@app.before_request
+def _csp_nonce():
+    # Per-request nonce for the tiny inline theme-init script (anti-flash).
+    g.csp_nonce = secrets.token_urlsafe(16)
+
+
+@app.context_processor
+def _inject_csp_nonce():
+    return {"csp_nonce": getattr(g, "csp_nonce", "")}
+
+
 @app.after_request
 def security_headers(resp):
+    nonce = getattr(g, "csp_nonce", "")
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -196,9 +209,9 @@ def security_headers(resp):
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "style-src 'self' https://fonts.googleapis.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src https://fonts.gstatic.com; "
-        "script-src 'self'; img-src 'self' data:; "
+        f"script-src 'self' 'nonce-{nonce}'; img-src 'self' data:; "
         "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     )
     if _secure_cookies:
