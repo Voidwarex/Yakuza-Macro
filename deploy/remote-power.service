@@ -1,4 +1,4 @@
-# systemd unit for the Remote Power relay.
+# systemd unit for the Amos Solutions relay.
 #
 # Adjust the paths and the User, then:
 #   sudo cp deploy/remote-power.service /etc/systemd/system/
@@ -8,7 +8,7 @@
 # Put your secrets in /etc/remote-power.env (see server/config.example.env).
 
 [Unit]
-Description=Remote Power relay
+Description=Amos Solutions relay
 After=network.target
 
 [Service]

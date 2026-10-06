@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Remote Power as a background user systemd service (starts at login).
+# Install Amos Solutions as a background user systemd service (starts at login).
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,7 +16,7 @@ echo "Installing 'requests'..."
 mkdir -p "$UNIT_DIR"
 cat > "$UNIT" <<EOF
 [Unit]
-Description=Remote Power listener
+Description=Amos Solutions listener
 After=network-online.target
 
 [Service]

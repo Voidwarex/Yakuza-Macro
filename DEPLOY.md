@@ -1,4 +1,4 @@
-# Deploying Remote Power (SSH)
+# Deploying Amos Solutions (SSH)
 
 You have two things to put on your server:
 

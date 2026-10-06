@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Remote Power as a background LaunchAgent (starts at login, no window).
+# Install Amos Solutions as a background LaunchAgent (starts at login, no window).
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,6 +38,6 @@ launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 
 echo
-echo "Installed. Remote Power runs in the background now and at every login."
+echo "Installed. Amos Solutions runs in the background now and at every login."
 echo "Logs:      $DIR/listener.log"
 echo "To remove: launchctl unload \"$PLIST\" && rm \"$PLIST\""

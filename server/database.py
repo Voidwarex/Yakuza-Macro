@@ -1,5 +1,5 @@
 """
-SQLite data layer for the Remote Power relay (multi-account edition).
+SQLite data layer for the Amos Solutions relay (multi-account edition).
 
 Tables
 ------

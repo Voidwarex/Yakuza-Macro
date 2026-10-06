@@ -1,5 +1,5 @@
 """
-Remote Power — PC listener.
+Amos Solutions — PC listener.
 
 Runs on the PC you want to control. It reaches *out* to your relay server
 (https://api.amos.fyi by default) on a loop and asks "is there anything for
@@ -325,7 +325,7 @@ def main():
 
     kind = resolve_kind(cfg)
 
-    log.info("Remote Power listener — device '%s' (%s)", cfg["device"], kind)
+    log.info("Amos Solutions listener — device '%s' (%s)", cfg["device"], kind)
     log.info("Relay: %s  (polling every %ss)", cfg["server_url"], cfg["poll_interval"])
     if cfg["dry_run"]:
         log.info("DRY RUN: commands will be logged but not executed.")

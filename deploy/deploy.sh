@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy Remote Power on the server (run this over SSH, on the box that
+# Deploy Amos Solutions on the server (run this over SSH, on the box that
 # serves amos.fyi). It does two things:
 #
 #   1. Publishes the new website/index.html to the amos.fyi web root.

@@ -1,4 +1,4 @@
-# Remote Power
+# Amos Solutions
 
 Turn your PC off (or restart / lock it) from anywhere in the world through a
 web page. Built on the same stack as the Amos license server: a small Flask

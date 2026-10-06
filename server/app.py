@@ -1,5 +1,5 @@
 """
-Remote Power — relay server (multi-account edition).
+Amos Solutions — relay server (multi-account edition).
 
 Host this on your own server (reachable from the internet). It:
 
@@ -827,7 +827,7 @@ def serve():
     port = int(os.environ.get("PORT", "8000"))
     # Start the schedule worker (daemon so it dies with the process).
     threading.Thread(target=_scheduler_loop, daemon=True).start()
-    print(f"Remote Power relay starting on http://{host}:{port} "
+    print(f"Amos Solutions relay starting on http://{host}:{port} "
           f"(billing: {'on' if BILLING_ENABLED else 'off'})")
     try:
         from waitress import serve as waitress_serve
