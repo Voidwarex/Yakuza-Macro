@@ -24,6 +24,17 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 
 <style>
+    /* --- Smooth cross-page transitions (View Transitions API) --- */
+    @view-transition { navigation: auto; }
+    @media (prefers-reduced-motion: no-preference) {
+        ::view-transition-old(root) { animation: vtOut 0.22s ease both; }
+        ::view-transition-new(root) {
+            animation: vtIn 0.36s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+        }
+        @keyframes vtOut { to { opacity: 0; } }
+        @keyframes vtIn { from { opacity: 0; transform: translateY(14px) scale(0.995); } }
+    }
+
     :root {
         --bg: #ffffff; --bg-soft: #f5f7fb; --surface: #ffffff;
         --border: #e7eaf0; --border-strong: #d7dce6;
