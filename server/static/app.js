@@ -62,6 +62,10 @@ let planState = { used: 0, limit: 3, at_limit: false };
 const expanded = new Set(); // device ids whose card is open (survives refresh)
 let previewsRequested = false; // request screen previews once per panel entry
 
+let allDevices = [];        // last fetched device list
+let currentView = "all";    // all | online | offline (sidebar filter)
+let searchTerm = "";        // sidebar search box
+
 function requestPreview(id) {
     // Ask a device to capture its screen (no-op server-side if it's off there).
     api(`/panel/devices/${id}/screenshot`, { method: "POST" }).catch(() => {});
@@ -93,15 +97,42 @@ async function loadDevices() {
     if (usage) usage.textContent = `${planState.used} / ${planState.limit} devices`;
     updateMeter();
 
+    allDevices = devices;
+    updateNavBadges();
+    renderDevices();
+}
+
+function updateNavBadges() {
+    const total = allDevices.length;
+    const online = allDevices.filter((d) => d.online).length;
+    const allB = document.getElementById("navAllCount");
+    if (allB) allB.textContent = total ? String(total) : "";
+    const onB = document.getElementById("navOnline");
+    if (onB) onB.style.display = online ? "inline-grid" : "none";
+}
+
+function renderDevices() {
     const grid = document.getElementById("grid");
     const empty = document.getElementById("empty");
+    if (!grid) return;
+
+    const q = searchTerm.trim().toLowerCase();
+    let devices = allDevices;
+    if (currentView === "online") devices = devices.filter((d) => d.online);
+    else if (currentView === "offline") devices = devices.filter((d) => !d.online);
+    if (q) devices = devices.filter((d) => (d.name || "").toLowerCase().includes(q));
 
     if (!devices.length) {
         grid.innerHTML = "";
-        empty.style.display = "block";
+        if (empty) {
+            empty.style.display = "block";
+            empty.innerHTML = allDevices.length
+                ? "No devices match this view."
+                : 'No devices yet. Click <b>Add device</b> to enroll your first PC.';
+        }
         return;
     }
-    empty.style.display = "none";
+    if (empty) empty.style.display = "none";
 
     grid.innerHTML = devices
         .map((d) => {
@@ -488,6 +519,42 @@ document.addEventListener("DOMContentLoaded", () => {
         if (btn) deleteSchedule(btn.getAttribute("data-sch"));
     });
     onKindChange();
+
+    // ---- sidebar: collapsible rail ----
+    const appWindow = document.getElementById("appWindow");
+    try {
+        if (localStorage.getItem("amos-rail") === "1") appWindow.classList.add("rail");
+    } catch (e) {}
+    const railBtn = document.querySelector("[data-rail-toggle]");
+    if (railBtn) {
+        railBtn.addEventListener("click", () => {
+            const collapsed = appWindow.classList.toggle("rail");
+            try { localStorage.setItem("amos-rail", collapsed ? "1" : "0"); } catch (e) {}
+        });
+    }
+
+    // ---- sidebar: view filters ----
+    const TITLES = { all: "Your devices", online: "Online devices", offline: "Offline devices" };
+    document.querySelectorAll(".nav-item[data-view]").forEach((item) => {
+        item.addEventListener("click", () => {
+            currentView = item.getAttribute("data-view");
+            document.querySelectorAll(".nav-item[data-view]").forEach((n) =>
+                n.classList.toggle("active", n === item)
+            );
+            const title = document.getElementById("viewTitle");
+            if (title) title.textContent = TITLES[currentView] || "Your devices";
+            renderDevices();
+        });
+    });
+
+    // ---- sidebar: search ----
+    const search = document.getElementById("deviceSearch");
+    if (search) {
+        search.addEventListener("input", () => {
+            searchTerm = search.value;
+            renderDevices();
+        });
+    }
 
     loadDevices();
     setInterval(loadDevices, 5000);
