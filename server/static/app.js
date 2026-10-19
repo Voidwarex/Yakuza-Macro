@@ -533,6 +533,13 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    // ---- sidebar: mobile drawer ----
+    const openNav = () => appWindow.classList.add("nav-open");
+    const closeNav = () => appWindow.classList.remove("nav-open");
+    document.querySelectorAll("[data-nav-open]").forEach((b) => b.addEventListener("click", openNav));
+    document.querySelectorAll("[data-nav-close]").forEach((b) => b.addEventListener("click", closeNav));
+    const isMobile = () => window.matchMedia("(max-width: 760px)").matches;
+
     // ---- sidebar: view filters ----
     const TITLES = { all: "Your devices", online: "Online devices", offline: "Offline devices" };
     document.querySelectorAll(".nav-item[data-view]").forEach((item) => {
@@ -544,8 +551,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const title = document.getElementById("viewTitle");
             if (title) title.textContent = TITLES[currentView] || "Your devices";
             renderDevices();
+            if (isMobile()) closeNav();
         });
     });
+    // tapping any sidebar link on mobile closes the drawer
+    document.querySelectorAll(".nav-foot a, .nav-foot button").forEach((el) =>
+        el.addEventListener("click", () => { if (isMobile()) closeNav(); })
+    );
 
     // ---- sidebar: search ----
     const search = document.getElementById("deviceSearch");
