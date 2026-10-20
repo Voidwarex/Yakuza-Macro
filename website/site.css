@@ -329,3 +329,99 @@ footer { border-top: 1px solid var(--border); padding: 32px 0; color: var(--mute
     .nav-right .hide-sm { display: none; }
     section.block { padding: 60px 0; }
 }
+
+/* ============================================================
+   Motion design (scroll reveals, hero intro, micro-interactions)
+   All opt-in and disabled under prefers-reduced-motion.
+   ============================================================ */
+
+/* Scroll progress bar */
+.scroll-progress {
+    position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 60;
+    transform: scaleX(0); transform-origin: 0 50%;
+    background: linear-gradient(90deg, #8b5cf6, #c4b5fd);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 70%, transparent);
+    will-change: transform;
+}
+
+/* Button press + nav underline (always on; cheap) */
+.btn:active { transform: translateY(0) scale(0.975); }
+.nav-right .link { position: relative; }
+.nav-right .link::after {
+    content: ""; position: absolute; left: 10px; right: 10px; bottom: 4px; height: 2px;
+    background: var(--grad); border-radius: 2px; transform: scaleX(0); transform-origin: 0 50%;
+    transition: transform 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.nav-right .link:hover::after { transform: scaleX(1); }
+
+@media (prefers-reduced-motion: no-preference) {
+    /* ---- hero entrance (on load) ---- */
+    html.js body:not(.ready) .hero .wrap > *:not(.preview) { opacity: 0; }
+    html.js body.ready .hero .wrap > *:not(.preview) { animation: heroIn 0.7s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+    html.js body.ready .hero .wrap > *:nth-child(1) { animation-delay: 0.05s; }
+    html.js body.ready .hero .wrap > *:nth-child(2) { animation-delay: 0.13s; }
+    html.js body.ready .hero .wrap > *:nth-child(3) { animation-delay: 0.21s; }
+    html.js body.ready .hero .wrap > *:nth-child(4) { animation-delay: 0.29s; }
+    html.js body.ready .hero .wrap > *:nth-child(5) { animation-delay: 0.37s; }
+    @keyframes heroIn { from { opacity: 0; transform: translateY(22px); } }
+
+    /* ---- hero preview: reveal + gentle float ---- */
+    html.js .hero .preview { opacity: 0; }
+    html.js .hero .preview.is-revealed {
+        animation: previewIn 0.8s cubic-bezier(0.2, 0.7, 0.3, 1) both, floaty 7s ease-in-out 1.1s infinite;
+    }
+    @keyframes previewIn { from { opacity: 0; transform: translateY(32px) scale(0.985); } to { opacity: 1; transform: none; } }
+    @keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+
+    /* ---- scroll reveals ---- */
+    html.js .section-head,
+    html.js .grid3 > *,
+    html.js .uc-grid > *,
+    html.js .price-grid > *,
+    html.js .steps > *,
+    html.js .promise-grid > *,
+    html.js .cols > *,
+    html.js .faq > details,
+    html.js .cta-band {
+        opacity: 0; transform: translateY(28px);
+        transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.2, 0.7, 0.3, 1);
+    }
+    html.js .is-revealed { opacity: 1 !important; transform: none !important; }
+
+    /* stagger items within a row */
+    html.js .grid3 > *:nth-child(2),
+    html.js .steps > *:nth-child(2),
+    html.js .cols > *:nth-child(2),
+    html.js .promise-grid > *:nth-child(2) { transition-delay: 0.09s; }
+    html.js .grid3 > *:nth-child(3),
+    html.js .steps > *:nth-child(3),
+    html.js .promise-grid > *:nth-child(3) { transition-delay: 0.18s; }
+    html.js .promise-grid > *:nth-child(4) { transition-delay: 0.27s; }
+    html.js .uc-grid > *:nth-child(2) { transition-delay: 0.07s; }
+    html.js .uc-grid > *:nth-child(3) { transition-delay: 0.14s; }
+    html.js .uc-grid > *:nth-child(4) { transition-delay: 0.21s; }
+    html.js .price-grid > *:nth-child(2) { transition-delay: 0.1s; }
+    html.js .price-grid > *:nth-child(3) { transition-delay: 0.2s; }
+    html.js .faq > details:nth-child(2) { transition-delay: 0.06s; }
+    html.js .faq > details:nth-child(3) { transition-delay: 0.12s; }
+    html.js .faq > details:nth-child(4) { transition-delay: 0.18s; }
+    html.js .faq > details:nth-child(5) { transition-delay: 0.24s; }
+
+    /* ---- idle micro-motion ---- */
+    .tier.featured .flag { animation: flagPulse 2.6s ease-in-out infinite; }
+    @keyframes flagPulse {
+        0%, 100% { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 40%, transparent); }
+        50% { box-shadow: 0 6px 22px color-mix(in srgb, var(--accent) 65%, transparent); }
+    }
+    .badge .dot { animation: dotPulse 2s ease-in-out infinite; }
+    @keyframes dotPulse { 0%, 100% { box-shadow: 0 0 8px var(--accent); } 50% { box-shadow: 0 0 16px var(--accent); } }
+    .mini .live { animation: dotPulse 2.4s ease-in-out infinite; }
+
+    /* card icons lean in on hover */
+    .card:hover .ic, .uc:hover .emoji { transform: translateY(-2px) scale(1.06); }
+    .card .ic, .uc .emoji { transition: transform 0.2s cubic-bezier(0.2, 0.7, 0.3, 1); }
+
+    /* brand mark spin-glow on hover */
+    .brand:hover .mark { box-shadow: 0 8px 26px color-mix(in srgb, var(--accent) 70%, transparent); transform: translateY(-1px); }
+    .brand .mark { transition: transform 0.2s, box-shadow 0.2s; }
+}
